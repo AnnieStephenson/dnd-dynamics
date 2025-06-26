@@ -1,0 +1,41 @@
+# Core data science libraries
+pandas>=1.3.0
+numpy>=1.21.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+scikit-learn>=1.0.0
+
+# NLP and embeddings
+sentence-transformers>=2.2.0
+transformers>=4.20.0
+torch>=1.12.0
+
+# Topic modeling
+bertopic>=0.15.0
+hdbscan>=0.8.28
+umap-learn>=0.5.3
+gensim>=4.2.0
+
+# Additional ML utilities
+scipy>=1.7.0
+joblib>=1.1.0
+
+# Jupyter notebook support
+jupyter>=1.0.0
+ipykernel>=6.0.0
+ipywidgets>=7.6.0
+
+# Visualization enhancements
+plotly>=5.0.0
+kaleido>=0.2.1
+
+# Text processing
+nltk>=3.7
+spacy>=3.4.0
+
+# Progress bars and utilities
+tqdm>=4.62.0
+
+# Optional: For advanced visualizations
+bokeh>=2.4.0
+networkx>=2.6.0
