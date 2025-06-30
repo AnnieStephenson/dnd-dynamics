@@ -48,8 +48,8 @@ dnd-dynamics/
 
 #### 🔧 **Analysis Modules**
 - **`dnd_analysis.py`**: Single-campaign statistical analysis functions
-  - Time interval analysis, player statistics, character mentions
-  - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`
+  - Time interval analysis, player statistics, character mentions, player participation
+  - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`, `calculate_player_campaign_participation()`
   
 - **`creative_metrics.py`**: Advanced NLP creativity analysis
   - Semantic embeddings, topic modeling, novelty scoring
@@ -128,6 +128,23 @@ campaign_result = {
         'top_players': ['Alice', 'Bob', 'Charlie'],         # Most active players
         'distribution_data': pd.DataFrame(...)              # Length distributions
     },
+    'post_lengths_by_label': {                              # NEW: Label-aware analysis
+        'in_character': {
+            'overall': {'mean_words': 62.1, 'count': 120, 'total_words': 7452}
+        },
+        'out_of_character': {
+            'overall': {'mean_words': 25.3, 'count': 89, 'total_words': 2252}
+        },
+        'mixed': {
+            'overall': {'mean_words': 45.7, 'count': 34, 'total_words': 1554}
+        },
+        'summary': {
+            'total_messages': 243,
+            'messages_with_in_character': 120,
+            'messages_with_out_of_character': 89,
+            'messages_with_mixed': 34
+        }
+    },
     'player_engagement': {
         'posts_per_player': {'Alice': 45, 'Bob': 32, ...}, # Post counts
         'avg_length_per_player': {'Alice': 25.3, ...},     # Avg words per post
@@ -154,8 +171,18 @@ multi_campaign_results = {
 ```python
 # Single campaign creativity result
 creativity_result = {
-    'embeddings': np.ndarray,                               # Sentence embeddings (768-dim)
-    'semantic_distances': [0.12, 0.34, 0.08, ...],         # Message-to-message distances
+    'embeddings': np.ndarray,                               # Combined sentence embeddings (768-dim)
+    'semantic_distances': [0.12, 0.34, 0.08, ...],         # Combined message-to-message distances
+    'label_embeddings': {                                   # NEW: Label-specific embeddings
+        'in-character': np.ndarray,                         # In-character embeddings only
+        'out-of-character': np.ndarray,                     # Out-of-character embeddings only
+        'mixed': np.ndarray                                 # Mixed content embeddings only
+    },
+    'label_semantic_distances': {                           # NEW: Label-specific distances
+        'in-character': [0.15, 0.28, 0.09, ...],          # In-character semantic distances
+        'out-of-character': [0.08, 0.41, 0.12, ...],      # Out-of-character semantic distances
+        'mixed': [0.22, 0.19, 0.31, ...]                  # Mixed content semantic distances
+    },
     'session_novelty': {
         'novelty_scores': [0.65, 0.23, 0.89, ...],         # Per-session novelty
         'session_boundaries': [0, 15, 28, ...],             # Session start indices
@@ -191,20 +218,47 @@ aggregated_results = {
         'campaign_1': {
             'total_messages': 156,                          # Campaign size
             'unique_players': 4,                            # Player count
-            'avg_semantic_distance': 0.234,                # Mean creativity
+            'avg_semantic_distance': 0.234,                # Mean creativity (combined)
             'avg_novelty_score': 0.591,                    # Mean novelty
-            'topic_change_rate': 0.25                      # Topic dynamics
+            'topic_change_rate': 0.25,                     # Topic dynamics
+            'in_character_semantic_distance': 0.289,       # NEW: In-character creativity
+            'out_of_character_semantic_distance': 0.156,   # NEW: Out-of-character creativity
+            'mixed_semantic_distance': 0.201,              # NEW: Mixed content creativity
+            'in_character_message_count': 78,              # NEW: In-character message count
+            'out_of_character_message_count': 64,          # NEW: Out-of-character message count
+            'mixed_message_count': 14                      # NEW: Mixed message count
         }
     },
     'cross_campaign_stats': {
         'semantic_distance': {
-            'mean': 0.198, 'std': 0.067,                   # Population statistics
+            'mean': 0.198, 'std': 0.067,                   # Population statistics (combined)
             'min': 0.089, 'max': 0.345,                    # Range
             'campaigns_analyzed': 50                        # Sample size
+        },
+        'in_character_semantic_distance': {                # NEW: In-character cross-campaign stats
+            'mean': 0.267, 'std': 0.082,                   # In-character population statistics
+            'min': 0.124, 'max': 0.412,                    # In-character range
+            'campaigns_analyzed': 47,                       # Campaigns with in-character content
+            'total_messages_analyzed': 3542                 # Total in-character messages
+        },
+        'out_of_character_semantic_distance': {            # NEW: Out-of-character cross-campaign stats
+            'mean': 0.145, 'std': 0.053,                   # Out-of-character population statistics
+            'min': 0.067, 'max': 0.289,                    # Out-of-character range
+            'campaigns_analyzed': 49,                       # Campaigns with out-of-character content
+            'total_messages_analyzed': 4103                 # Total out-of-character messages
+        },
+        'mixed_semantic_distance': {                       # NEW: Mixed content cross-campaign stats
+            'mean': 0.201, 'std': 0.071,                   # Mixed content population statistics
+            'min': 0.098, 'max': 0.356,                    # Mixed content range
+            'campaigns_analyzed': 32,                       # Campaigns with mixed content
+            'total_messages_analyzed': 1302                 # Total mixed messages
         }
     },
     'distributions': {
-        'semantic_distances': [0.198, 0.234, ...],         # Raw data for plotting
+        'semantic_distances': [0.198, 0.234, ...],         # Raw data for plotting (combined)
+        'in_character_semantic_distances': [0.267, ...],   # NEW: In-character distribution data
+        'out_of_character_semantic_distances': [0.145, ...], # NEW: Out-of-character distribution data
+        'mixed_semantic_distances': [0.201, ...],          # NEW: Mixed content distribution data
         'campaign_ids': ['camp_1', 'camp_2', ...],         # Campaign identifiers
         'campaign_sizes': [156, 203, 89, ...]              # Message counts
     },
@@ -303,43 +357,133 @@ print(f"  Players: {campaign_data['basic_stats']['metadata']['unique_players']}"
 print(f"  Avg interval: {campaign_data['time_intervals']['avg_interval_hours']:.2f}h")
 ```
 
-### 3. Creativity Analysis Workflow
+### 3. Label-Aware Creativity Analysis Workflow
 
 ```python
 from creative_metrics import analyze_creativity_all_campaigns, aggregate_creativity_metrics
 import matplotlib.pyplot as plt
 
-# Analyze creativity across 5 campaigns
+# Analyze creativity across 5 campaigns with label-aware processing
 creativity_results = analyze_creativity_all_campaigns(
     max_campaigns=5,
     cache_dir='creativity_cache',
     show_progress=True
 )
 
-# Aggregate for comparison
+# Aggregate for comparison (now includes label-aware metrics)
 aggregated = aggregate_creativity_metrics(creativity_results)
 
-# Navigate the results
+# Navigate label-aware results
 for campaign_id, result in creativity_results.items():
+    print(f"\nCampaign: {campaign_id[:30]}...")
+    
+    # Combined creativity
     if result and 'semantic_distances' in result:
         distances = result['semantic_distances']
         avg_creativity = sum(d for d in distances if not pd.isna(d)) / len([d for d in distances if not pd.isna(d)])
-        print(f"{campaign_id[:30]}... avg creativity: {avg_creativity:.4f}")
+        print(f"  Combined avg creativity: {avg_creativity:.4f}")
+    
+    # Label-specific creativity
+    if result and 'label_semantic_distances' in result:
+        for label, distances in result['label_semantic_distances'].items():
+            if len(distances) > 0:
+                avg_label_creativity = sum(d for d in distances if not pd.isna(d)) / len([d for d in distances if not pd.isna(d)])
+                print(f"  {label} avg creativity: {avg_label_creativity:.4f} ({len(distances)} messages)")
 
-# Generate comparison plot
-plt.figure(figsize=(10, 6))
+# Generate label-aware comparison plot
+plt.figure(figsize=(15, 10))
+
 for i, (campaign_id, result) in enumerate(creativity_results.items()):
-    if result and 'semantic_distances' in result:
-        distances = [d for d in result['semantic_distances'] if not pd.isna(d)]
-        plt.hist(distances, alpha=0.5, label=campaign_id[:20], bins=15)
-plt.xlabel('Semantic Distance')
-plt.ylabel('Frequency')
+    if result and 'label_semantic_distances' in result:
+        
+        # Plot in-character creativity
+        if 'in-character' in result['label_semantic_distances']:
+            distances = [d for d in result['label_semantic_distances']['in-character'] if not pd.isna(d)]
+            if distances:
+                plt.subplot(2, 2, 1)
+                plt.hist(distances, alpha=0.7, label=campaign_id[:15], bins=15)
+                plt.title('In-Character Creativity Distribution')
+                plt.xlabel('Semantic Distance')
+                plt.ylabel('Frequency')
+                
+        # Plot out-of-character patterns
+        if 'out-of-character' in result['label_semantic_distances']:
+            distances = [d for d in result['label_semantic_distances']['out-of-character'] if not pd.isna(d)]
+            if distances:
+                plt.subplot(2, 2, 2)
+                plt.hist(distances, alpha=0.7, label=campaign_id[:15], bins=15)
+                plt.title('Out-of-Character Communication Patterns')
+                plt.xlabel('Semantic Distance')
+                plt.ylabel('Frequency')
+
+plt.tight_layout()
 plt.legend()
-plt.title('Creativity Distribution Across Campaigns')
 plt.show()
+
+# Access label-specific cross-campaign statistics
+print("\n=== LABEL-AWARE CROSS-CAMPAIGN STATISTICS ===")
+for stat_name, stats in aggregated['cross_campaign_stats'].items():
+    if 'semantic_distance' in stat_name:
+        print(f"{stat_name}: mean={stats['mean']:.4f}, campaigns={stats['campaigns_analyzed']}")
 ```
 
-### 4. Cache Management Best Practices
+### 4. Player Campaign Participation Analysis
+
+```python
+from dnd_analysis import load_or_compute_incremental, calculate_player_campaign_participation
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Load multi-campaign analysis results (using caching for efficiency)
+all_results = load_or_compute_incremental(
+    max_campaigns=100,
+    show_progress=True
+)
+
+# Calculate how many campaigns each player has participated in
+player_participation = calculate_player_campaign_participation(all_results)
+
+# Display participation statistics
+campaign_counts = list(player_participation.values())
+print(f"📊 PLAYER PARTICIPATION ANALYSIS")
+print(f"  Total unique players: {len(player_participation):,}")
+print(f"  Average campaigns per player: {np.mean(campaign_counts):.2f}")
+print(f"  Most active player: {max(campaign_counts)} campaigns")
+print(f"  Players in only 1 campaign: {sum(1 for c in campaign_counts if c == 1):,}")
+
+# Show top players
+print(f"\n🏆 MOST ACTIVE PLAYERS:")
+for i, (player, count) in enumerate(list(player_participation.items())[:5], 1):
+    print(f"  {i}. {player[:30]}: {count} campaigns")
+
+# Create participation distribution plot
+plt.figure(figsize=(12, 8))
+plt.hist(campaign_counts, bins=min(20, max(campaign_counts)), alpha=0.7, edgecolor='black')
+plt.xlabel('Number of Campaigns Played')
+plt.ylabel('Number of Players')
+plt.title('Distribution of Campaign Participation Across Players')
+plt.grid(True, alpha=0.3)
+
+# Add summary statistics
+mean_campaigns = np.mean(campaign_counts)
+median_campaigns = np.median(campaign_counts)
+plt.axvline(mean_campaigns, color='red', linestyle='--', label=f'Mean: {mean_campaigns:.1f}')
+plt.axvline(median_campaigns, color='orange', linestyle='--', label=f'Median: {median_campaigns:.1f}')
+
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# Community insights
+single_campaign = sum(1 for count in campaign_counts if count == 1)
+multi_campaign = len(campaign_counts) - single_campaign
+print(f"\n💡 COMMUNITY INSIGHTS:")
+print(f"  One-time players: {single_campaign:,} ({single_campaign/len(campaign_counts)*100:.1f}%)")
+print(f"  Multi-campaign players: {multi_campaign:,} ({multi_campaign/len(campaign_counts)*100:.1f}%)")
+print(f"  Core community (5+ campaigns): {sum(1 for c in campaign_counts if c >= 5):,} players")
+```
+
+### 5. Cache Management Best Practices
 
 ```python
 import os
@@ -484,49 +628,66 @@ def daily_analysis():
 
 ---
 
-## 📚 API Reference
+## 🧪 Testing
 
-### Core Analysis Functions (`dnd_analysis.py`)
+The project includes a comprehensive test suite to verify that word counting functions correctly include all paragraphs from posts and handle various edge cases.
 
-```python
-def load_dnd_data(json_data: Dict) -> pd.DataFrame
-    """Convert nested JSON to clean DataFrame"""
+### Running Tests
 
-def analyze_time_intervals(df: pd.DataFrame) -> Dict
-    """Calculate time between posts and patterns"""
+```bash
+# Install testing dependencies
+pip install pytest>=7.0.0
 
-def analyze_post_lengths(df: pd.DataFrame, include_all_players: bool = True) -> Dict  
-    """Analyze word counts and length distributions"""
+# Run all tests
+pytest tests/
 
-def analyze_player_engagement(df: pd.DataFrame) -> Dict
-    """Player activity statistics and rankings"""
+# Run specific test file
+pytest tests/test_word_counting.py
 
-def load_or_compute_incremental(max_campaigns: int, **kwargs) -> Dict
-    """Smart caching with incremental processing"""
+# Run tests with verbose output
+pytest tests/ -v
+
+# Run tests with coverage (if pytest-cov installed)
+pytest tests/ --cov=dnd_analysis
 ```
 
-### Creativity Functions (`creative_metrics.py`)
+### Test Coverage
 
-```python
-def get_embeddings(df: pd.DataFrame, model_name: str = "all-MiniLM-L6-v2") -> np.ndarray
-    """Generate sentence embeddings for text analysis"""
+The test suite covers:
 
-def semantic_distance(df: pd.DataFrame, embeddings: np.ndarray = None) -> pd.Series
-    """Calculate semantic distances between consecutive messages"""
+- **Multi-paragraph word counting**: Verifies all paragraphs are included in total word counts
+- **Label-aware counting**: Tests separate counting for in-character, out-of-character, and mixed content
+- **Edge cases**: Empty paragraphs, special characters, punctuation, multiple spaces
+- **Function consistency**: Ensures all word-counting functions produce consistent results
+- **Aggregation accuracy**: Verifies multi-campaign aggregation preserves individual word counts
+- **Old format compatibility**: Tests backward compatibility with single-text-field format
 
-def topic_model(df: pd.DataFrame, n_topics: int = 20) -> Tuple[pd.Series, object]
-    """Extract topics using BERTopic or LDA"""
+### Test Structure
 
-def analyze_creativity_all_campaigns(max_campaigns: int, **kwargs) -> Dict
-    """Multi-campaign creativity analysis with caching"""
+```
+tests/
+├── test_word_counting.py        # Comprehensive word counting tests
+└── __pycache__/                 # Compiled test files (auto-generated)
 ```
 
-### Key Parameters
+### Adding New Tests
 
-- **`max_campaigns`**: Limit analysis to first N campaigns (None = all)
-- **`force_refresh`**: Ignore cache and recompute (default: False) 
-- **`show_progress`**: Display progress bars (default: True)
-- **`cache_dir`**: Directory for cached results (default: 'campaign_stats_cache')
+When adding new word-counting functionality:
+
+1. Create test data with known, manually-counted word totals
+2. Test both new paragraph format and old single-text format
+3. Verify consistency across all analysis functions
+4. Include edge cases (empty content, special characters, etc.)
+5. Test integration with existing caching and aggregation systems
+
+### Test Philosophy
+
+The test suite follows these principles:
+
+- **Manual verification**: Expected word counts are manually calculated for test data
+- **Comprehensive coverage**: Tests cover all word-counting functions and edge cases
+- **Integration testing**: Verifies functions work together correctly in multi-campaign analysis
+- **Clear assertions**: Each test includes descriptive error messages explaining what went wrong
 
 ---
 
@@ -633,50 +794,82 @@ def _detect_dice_rolls(row):
 
 ### Character Labels and Content Types
 
-**In-Character vs Out-of-Character Distinction:**
+**Label-Based Content Processing:**
 
-The code identifies different content types within turns:
+The data contains pre-labeled content at the paragraph level using the "label" key:
 
 ```json
 {
   "paragraphs": {
-    "0": {"text": "I cast Fireball at the orc!"},           // In-character action
-    "1": {"text": "**OOC:** Is that within range?"},        // Out-of-character question
-    "2": {"text": "*Rolls 8d6 fire damage*"}                // Mechanical narration
+    "0": {
+      "text": "I cast Fireball at the orc!",
+      "label": "in-character"
+    },
+    "1": {
+      "text": "Is that within range?",
+      "label": "out-of-character"
+    },
+    "2": {
+      "text": "Rolling 8d6 fire damage: *rolls dice* 28 points of damage!",
+      "label": "mixed"
+    }
   }
 }
 ```
 
-**Detection Methods:**
-- **Markdown indicators**: `**OOC:**`, `**Out of Character:**`
-- **Italics for mechanics**: `*rolls dice*`, `*takes damage*`
-- **Character voice**: Direct speech without meta-indicators
+**Label Types in Data:**
+- **"in-character"**: Roleplay content, character actions, dialogue (52.0% of paragraphs)
+- **"out-of-character"**: Meta-discussion, administrative content, OOC questions (43.4% of paragraphs)
+- **"mixed"**: Combined narrative and mechanical content (4.6% of paragraphs)
+- **Missing labels**: Small portion of unlabeled content (1.4% of paragraphs)
 
-**Why This Matters:**
-- **Creativity Analysis**: In-character content shows narrative creativity vs. mechanical coordination
-- **Player Engagement**: Separates roleplay from rule discussions
-- **Topic Modeling**: Different content types cluster into different topics
+**Why Label-Aware Processing Matters:**
+- **Creativity Analysis**: In-character content reveals pure narrative creativity vs. coordination
+- **Player Engagement**: Separates roleplay intensity from administrative overhead
+- **Topic Modeling**: Different content types naturally cluster into distinct topics
+- **Accurate Metrics**: Post length, complexity, and semantic analysis vary significantly by content type
 
 ### Turn Parsing Logic
 
-**Multi-Component Extraction:**
+**Label-Aware Multi-Component Extraction:**
 
 ```python
 def load_dnd_data(json_data):
-    # 1. Extract text from paragraphs (preserving order)
+    # 1. Extract text from paragraphs by label type
     if 'paragraphs' in message_data:
-        text_segments = []
+        all_text_segments = []
+        in_char_segments = []
+        out_char_segments = []
+        mixed_segments = []
+        
         for para_id in sorted(paragraphs.keys()):
-            text_segments.append(para_data['text'])
-        text_content = ' '.join(text_segments)
+            para_data = paragraphs[para_id]
+            para_text = para_data['text']
+            all_text_segments.append(para_text)
+            
+            # Separate by label
+            para_label = para_data.get('label', 'unlabeled')
+            if para_label == 'in-character':
+                in_char_segments.append(para_text)
+            elif para_label == 'out-of-character':
+                out_char_segments.append(para_text)
+            elif para_label == 'mixed':
+                mixed_segments.append(para_text)
+        
+        # Create separate text fields for each label type
+        text_content = ' '.join(all_text_segments)
+        in_character_text = ' '.join(in_char_segments)
+        out_of_character_text = ' '.join(out_char_segments)
+        mixed_text = ' '.join(mixed_segments)
     
-    # 2. Process actions separately
+    # 2. Process actions separately (unchanged)
     actions = message_data.get('actions', [])
     
-    # 3. Extract character mentions
+    # 3. Extract character mentions (unchanged)
     name_mentions = message_data.get('name_mentions', [])
     
-    # 4. Determine message type
+    # 4. Determine primary label and message type
+    primary_label = _determine_primary_label(label_counts)
     message_type = _classify_message_type(combined_data)
 ```
 
@@ -698,18 +891,22 @@ def _classify_message_type(row):
 
 ### Impact on Analysis Metrics
 
-**Word Count Analysis:**
-- **Total Words**: Aggregates all paragraph text, excluding action labels
-- **Content Type Weighting**: Different analysis for dialogue vs. narration vs. mechanics
+**Label-Aware Word Count Analysis:**
+- **Total Words**: Aggregates all paragraph text across all labels
+- **Separated Counts**: `in_character_word_count`, `out_of_character_word_count`, `mixed_word_count`
+- **Label-Specific Statistics**: Mean, median, distribution analysis for each content type
 
-**Creativity Metrics:**
-- **Semantic Distance**: Calculated on combined paragraph text to preserve narrative flow
-- **Topic Modeling**: In-character content weighted higher for creativity analysis
-- **Novelty Scoring**: Actions and mechanics filtered out to focus on narrative creativity
+**Label-Aware Creativity Metrics:**
+- **Separate Embeddings**: Generate embeddings for each label type independently
+- **Label-Specific Semantic Distance**: Calculate creativity metrics separately for in-character vs. out-of-character content
+- **Pure Narrative Analysis**: In-character content provides cleaner creativity measurements
+- **Administrative Filtering**: Out-of-character content reveals coordination patterns
 
-**Player Engagement:**
-- **Turn Complexity**: Measures based on paragraph count + action count
-- **Roleplay vs. Mechanics**: Ratio of in-character to out-of-character content
+**Enhanced Player Engagement:**
+- **Roleplay Intensity**: Ratio of in-character to total content per player
+- **Administrative Overhead**: Out-of-character message frequency and length
+- **Content Balance**: Mixed content indicates narrative/mechanical integration
+- **Primary Label**: Dominant content type per message for classification
 
 ### Technical Implementation Notes
 

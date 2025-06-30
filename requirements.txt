@@ -36,6 +36,9 @@ spacy>=3.4.0
 # Progress bars and utilities
 tqdm>=4.62.0
 
+# Testing framework
+pytest>=7.0.0
+
 # Optional: For advanced visualizations
 bokeh>=2.4.0
 networkx>=2.6.0

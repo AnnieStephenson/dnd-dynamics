@@ -111,6 +111,62 @@ def get_embeddings(df: pd.DataFrame,
     
     return embeddings
 
+def get_embeddings_by_label(df: pd.DataFrame,
+                           model_name: str = "all-MiniLM-L6-v2",
+                           cache_dir: str = "embeddings_cache",
+                           labels_to_process: List[str] = None) -> Dict[str, np.ndarray]:
+    """
+    Generate and cache Sentence-BERT embeddings for text data separated by label.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing text data with label information
+    model_name : str, default "all-MiniLM-L6-v2"
+        Name of the sentence-transformers model to use
+    cache_dir : str, default "embeddings_cache"
+        Directory to cache embeddings
+    labels_to_process : List[str], optional
+        Which labels to process. If None, processes all available labels.
+        
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        Dictionary mapping label types to embedding arrays
+    """
+    if not SENTENCE_TRANSFORMERS_AVAILABLE:
+        raise ImportError("sentence-transformers is required. Install with: pip install sentence-transformers")
+    
+    if labels_to_process is None:
+        labels_to_process = ['in-character', 'out-of-character', 'mixed']
+    
+    # Map labels to DataFrame columns
+    label_columns = {
+        'in-character': 'in_character_text',
+        'out-of-character': 'out_of_character_text',
+        'mixed': 'mixed_text'
+    }
+    
+    embeddings_by_label = {}
+    
+    for label in labels_to_process:
+        if label in label_columns:
+            text_col = label_columns[label]
+            
+            # Filter to only messages with content for this label
+            label_df = df[df[text_col].str.len() > 0].copy()
+            
+            if len(label_df) > 0:
+                print(f"Processing {len(label_df)} messages for label: {label}")
+                embeddings = get_embeddings(label_df, model_name=model_name, 
+                                          text_col=text_col, cache_dir=cache_dir)
+                embeddings_by_label[label] = embeddings
+            else:
+                print(f"No content found for label: {label}")
+                embeddings_by_label[label] = np.array([])
+    
+    return embeddings_by_label
+
 def semantic_distance(df: pd.DataFrame, 
                      embeddings: Optional[np.ndarray] = None,
                      window: int = 1,
@@ -861,15 +917,44 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
             
             campaign_results = {}
             
-            # Get embeddings for all text
+            # Get embeddings for all text (combined)
             embeddings = get_embeddings(df)
             campaign_results['embeddings'] = embeddings
             
-            # Calculate semantic distances
+            # Get label-aware embeddings
+            try:
+                label_embeddings = get_embeddings_by_label(df)
+                campaign_results['label_embeddings'] = label_embeddings
+            except Exception as e:
+                if show_progress:
+                    print(f"Label-aware embeddings failed for campaign {campaign_id}: {e}")
+                campaign_results['label_embeddings'] = {}
+            
+            # Calculate semantic distances (combined)
             semantic_distances = semantic_distance(df, embeddings=embeddings)
             campaign_results['semantic_distances'] = semantic_distances
             
-            # Analyze session novelty
+            # Calculate label-aware semantic distances
+            label_semantic_distances = {}
+            for label, label_emb in campaign_results['label_embeddings'].items():
+                if len(label_emb) > 0:
+                    # Create DataFrame for this label
+                    label_col = {'in-character': 'in_character_text', 
+                               'out-of-character': 'out_of_character_text', 
+                               'mixed': 'mixed_text'}[label]
+                    label_df = df[df[label_col].str.len() > 0].copy()
+                    
+                    if len(label_df) > 1:  # Need at least 2 messages for distance calculation
+                        try:
+                            label_distances = semantic_distance(label_df, embeddings=label_emb)
+                            label_semantic_distances[label] = label_distances
+                        except Exception as e:
+                            if show_progress:
+                                print(f"Label distance calculation failed for {label}: {e}")
+            
+            campaign_results['label_semantic_distances'] = label_semantic_distances
+            
+            # Analyze session novelty (combined)
             novelty_results = session_novelty(df, embeddings=embeddings)
             campaign_results['session_novelty'] = novelty_results
             
@@ -1108,6 +1193,10 @@ def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
     campaign_sizes = []
     campaign_ids = []
     
+    # Label-aware metrics
+    label_semantic_distances = {'in-character': [], 'out-of-character': [], 'mixed': []}
+    label_message_counts = {'in-character': [], 'out-of-character': [], 'mixed': []}
+    
     for campaign_id, results in all_creativity_results.items():
         if results is None:
             continue
@@ -1149,14 +1238,39 @@ def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
         else:
             campaign_sizes.append(0)
         
+        # Label-aware semantic distances
+        if 'label_semantic_distances' in results:
+            label_results = results['label_semantic_distances']
+            for label in ['in-character', 'out-of-character', 'mixed']:
+                if label in label_results and len(label_results[label]) > 0:
+                    mean_distance = np.mean(label_results[label])
+                    label_semantic_distances[label].append(mean_distance)
+                    label_message_counts[label].append(len(label_results[label]))
+                else:
+                    label_semantic_distances[label].append(np.nan)
+                    label_message_counts[label].append(0)
+        else:
+            # No label data available
+            for label in ['in-character', 'out-of-character', 'mixed']:
+                label_semantic_distances[label].append(np.nan)
+                label_message_counts[label].append(0)
+        
         # Individual campaign summary
+        label_summary = {}
+        for label in ['in-character', 'out-of-character', 'mixed']:
+            label_summary[f'{label.replace("-", "_")}_semantic_distance'] = (
+                label_semantic_distances[label][-1] if not np.isnan(label_semantic_distances[label][-1]) else None
+            )
+            label_summary[f'{label.replace("-", "_")}_message_count'] = label_message_counts[label][-1]
+        
         aggregated['campaign_summaries'][campaign_id] = {
             'total_messages': results.get('metadata', {}).get('total_messages', 0),
             'unique_players': results.get('metadata', {}).get('unique_players', 0),
             'avg_semantic_distance': semantic_distances_all[-1] if not np.isnan(semantic_distances_all[-1]) else None,
             'avg_novelty_score': novelty_scores_all[-1] if not np.isnan(novelty_scores_all[-1]) else None,
             'topic_change_rate': topic_change_rates_all[-1] if not np.isnan(topic_change_rates_all[-1]) else None,
-            'date_range': results.get('metadata', {}).get('date_range')
+            'date_range': results.get('metadata', {}).get('date_range'),
+            **label_summary
         }
     
     # Cross-campaign statistics
@@ -1194,13 +1308,38 @@ def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
             'campaigns_analyzed': len(valid_change_rates)
         }
     
+    # Label-aware cross-campaign statistics
+    for label in ['in-character', 'out-of-character', 'mixed']:
+        valid_label_distances = [x for x in label_semantic_distances[label] if not np.isnan(x)]
+        valid_label_counts = [count for i, count in enumerate(label_message_counts[label]) 
+                             if not np.isnan(label_semantic_distances[label][i]) and count > 0]
+        
+        if valid_label_distances:
+            label_key = f'{label.replace("-", "_")}_semantic_distance'
+            aggregated['cross_campaign_stats'][label_key] = {
+                'mean': np.mean(valid_label_distances),
+                'std': np.std(valid_label_distances),
+                'min': np.min(valid_label_distances),
+                'max': np.max(valid_label_distances),
+                'median': np.median(valid_label_distances),
+                'campaigns_analyzed': len(valid_label_distances),
+                'total_messages_analyzed': sum(valid_label_counts)
+            }
+    
     # Distribution data for plotting
+    label_distributions = {}
+    for label in ['in-character', 'out-of-character', 'mixed']:
+        valid_label_distances = [x for x in label_semantic_distances[label] if not np.isnan(x)]
+        label_key = f'{label.replace("-", "_")}_semantic_distances'
+        label_distributions[label_key] = valid_label_distances
+    
     aggregated['distributions'] = {
         'semantic_distances': valid_semantic,
         'novelty_scores': valid_novelty,
         'topic_change_rates': valid_change_rates,
         'campaign_sizes': campaign_sizes,
-        'campaign_ids': campaign_ids
+        'campaign_ids': campaign_ids,
+        **label_distributions
     }
     
     # Overall summary

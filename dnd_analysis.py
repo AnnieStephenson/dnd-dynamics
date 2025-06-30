@@ -16,32 +16,63 @@ from datetime import datetime, timedelta
 
 def load_dnd_data(json_data: Dict) -> pd.DataFrame:
     """
-    Convert nested D&D JSON data into a clean DataFrame.
+    Convert nested D&D JSON data into a clean DataFrame with label-aware processing.
     
     Args:
         json_data: Dictionary containing campaign data
         
     Returns:
-        pd.DataFrame: Clean DataFrame with one row per message
+        pd.DataFrame: Clean DataFrame with one row per message, including label-separated text
     """
     rows = []
     
     for campaign_id, messages in json_data.items():
         for message_id, message_data in messages.items():
-            # Handle different text formats
+            # Handle different text formats with label separation
             text_content = ''
+            in_character_text = ''
+            out_of_character_text = ''
+            mixed_text = ''
+            label_counts = {'in-character': 0, 'out-of-character': 0, 'mixed': 0, 'unlabeled': 0}
+            
             if 'text' in message_data:
-                # Old format: single text field
+                # Old format: single text field (no label information)
                 text_content = message_data.get('text', '')
+                label_counts['unlabeled'] = 1
             elif 'paragraphs' in message_data:
-                # New format: paragraphs with text segments
+                # New format: paragraphs with text segments and labels
                 paragraphs = message_data.get('paragraphs', {})
-                text_segments = []
+                all_text_segments = []
+                in_char_segments = []
+                out_char_segments = []
+                mixed_segments = []
+                
                 for para_id in sorted(paragraphs.keys(), key=lambda x: int(x) if x.isdigit() else 0):
                     para_data = paragraphs[para_id]
                     if isinstance(para_data, dict) and 'text' in para_data:
-                        text_segments.append(para_data['text'])
-                text_content = ' '.join(text_segments)
+                        para_text = para_data['text']
+                        all_text_segments.append(para_text)
+                        
+                        # Process by label
+                        para_label = para_data.get('label', 'unlabeled')
+                        if para_label == 'in-character':
+                            in_char_segments.append(para_text)
+                            label_counts['in-character'] += 1
+                        elif para_label == 'out-of-character':
+                            out_char_segments.append(para_text)
+                            label_counts['out-of-character'] += 1
+                        elif para_label == 'mixed':
+                            mixed_segments.append(para_text)
+                            label_counts['mixed'] += 1
+                        else:
+                            # Handle missing or unknown labels
+                            label_counts['unlabeled'] += 1
+                
+                # Combine text by category
+                text_content = ' '.join(all_text_segments)
+                in_character_text = ' '.join(in_char_segments)
+                out_of_character_text = ' '.join(out_char_segments)
+                mixed_text = ' '.join(mixed_segments)
             
             # Extract actions from paragraphs if available
             actions = message_data.get('actions', {})
@@ -65,6 +96,10 @@ def load_dnd_data(json_data: Dict) -> pd.DataFrame:
                 'player': message_data.get('player'),
                 'character': message_data.get('character'),
                 'text': text_content,
+                'in_character_text': in_character_text,
+                'out_of_character_text': out_of_character_text,
+                'mixed_text': mixed_text,
+                'label_counts': label_counts,
                 'in_combat': message_data.get('in_combat', False),
                 'name_mentions': message_data.get('name_mentions', []),
                 'actions': actions,
@@ -80,10 +115,29 @@ def load_dnd_data(json_data: Dict) -> pd.DataFrame:
     
     # Add derived columns
     df['word_count'] = df['text'].str.split().str.len().fillna(0)
+    df['in_character_word_count'] = df['in_character_text'].str.split().str.len().fillna(0)
+    df['out_of_character_word_count'] = df['out_of_character_text'].str.split().str.len().fillna(0)
+    df['mixed_word_count'] = df['mixed_text'].str.split().str.len().fillna(0)
     df['has_dice_roll'] = df.apply(_detect_dice_rolls, axis=1)
     df['message_type'] = df.apply(_classify_message_type, axis=1)
+    df['primary_label'] = df.apply(_determine_primary_label, axis=1)
     
     return df
+
+def _determine_primary_label(row: pd.Series) -> str:
+    """Helper function to determine the primary label for a message."""
+    label_counts = row['label_counts']
+    
+    # Find the label with the most paragraphs
+    max_count = 0
+    primary_label = 'unlabeled'
+    
+    for label, count in label_counts.items():
+        if count > max_count:
+            max_count = count
+            primary_label = label
+    
+    return primary_label
 
 def _detect_dice_rolls(row: pd.Series) -> bool:
     """Helper function to detect dice rolls in message."""
@@ -278,6 +332,119 @@ def analyze_post_lengths(df: pd.DataFrame, by_player: bool = False) -> Dict:
             'count': len(word_counts),
             'word_counts_data': word_counts[word_counts <= 200].values  # For histogram
         }
+    
+    return results
+
+def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> Dict:
+    """
+    Analyze post lengths separated by character label (in-character, out-of-character, mixed).
+    
+    Args:
+        df: DataFrame containing D&D messages with label information
+        by_player: If True, return distribution per player
+        
+    Returns:
+        Dict containing length statistics separated by label type
+    """
+    results = {
+        'in_character': {},
+        'out_of_character': {},
+        'mixed': {},
+        'unlabeled': {}
+    }
+    
+    # Define label columns mapping
+    label_columns = {
+        'in_character': 'in_character_word_count',
+        'out_of_character': 'out_of_character_word_count',
+        'mixed': 'mixed_word_count'
+    }
+    
+    if by_player and 'player' in df.columns:
+        # Analysis by player for each label type
+        all_players = df['player'].dropna().unique()
+        
+        for label_type, word_col in label_columns.items():
+            results[label_type] = {}
+            
+            for player in all_players:
+                player_df = df[df['player'] == player]
+                word_counts = player_df[word_col]
+                # Only include messages that have content for this label
+                word_counts = word_counts[word_counts > 0]
+                
+                if len(word_counts) > 0:
+                    results[label_type][player] = {
+                        'mean_words': word_counts.mean(),
+                        'median_words': word_counts.median(),
+                        'std_words': word_counts.std(),
+                        'max_words': word_counts.max(),
+                        'count': len(word_counts),
+                        'total_words': word_counts.sum(),
+                        'word_counts_data': word_counts[word_counts <= 200].values
+                    }
+        
+        # Handle unlabeled content (uses primary_label)
+        results['unlabeled'] = {}
+        for player in all_players:
+            player_df = df[(df['player'] == player) & (df['primary_label'] == 'unlabeled')]
+            if len(player_df) > 0:
+                word_counts = player_df['word_count']
+                word_counts = word_counts[word_counts > 0]
+                
+                if len(word_counts) > 0:
+                    results['unlabeled'][player] = {
+                        'mean_words': word_counts.mean(),
+                        'median_words': word_counts.median(),
+                        'std_words': word_counts.std(),
+                        'max_words': word_counts.max(),
+                        'count': len(word_counts),
+                        'total_words': word_counts.sum(),
+                        'word_counts_data': word_counts[word_counts <= 200].values
+                    }
+    else:
+        # Overall analysis for each label type
+        for label_type, word_col in label_columns.items():
+            word_counts = df[word_col]
+            word_counts = word_counts[word_counts > 0]  # Only non-empty content
+            
+            if len(word_counts) > 0:
+                results[label_type]['overall'] = {
+                    'mean_words': word_counts.mean(),
+                    'median_words': word_counts.median(),
+                    'std_words': word_counts.std(),
+                    'max_words': word_counts.max(),
+                    'count': len(word_counts),
+                    'total_words': word_counts.sum(),
+                    'word_counts_data': word_counts[word_counts <= 200].values
+                }
+        
+        # Handle unlabeled content
+        unlabeled_df = df[df['primary_label'] == 'unlabeled']
+        if len(unlabeled_df) > 0:
+            word_counts = unlabeled_df['word_count']
+            word_counts = word_counts[word_counts > 0]
+            
+            if len(word_counts) > 0:
+                results['unlabeled']['overall'] = {
+                    'mean_words': word_counts.mean(),
+                    'median_words': word_counts.median(),
+                    'std_words': word_counts.std(),
+                    'max_words': word_counts.max(),
+                    'count': len(word_counts),
+                    'total_words': word_counts.sum(),
+                    'word_counts_data': word_counts[word_counts <= 200].values
+                }
+    
+    # Add summary statistics
+    results['summary'] = {
+        'total_messages': len(df),
+        'messages_with_in_character': len(df[df['in_character_word_count'] > 0]),
+        'messages_with_out_of_character': len(df[df['out_of_character_word_count'] > 0]),
+        'messages_with_mixed': len(df[df['mixed_word_count'] > 0]),
+        'messages_unlabeled': len(df[df['primary_label'] == 'unlabeled']),
+        'avg_labels_per_message': df['label_counts'].apply(lambda x: sum(x.values())).mean()
+    }
     
     return results
 
@@ -557,6 +724,8 @@ def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame],
                 'unique_players_characters': analyze_unique_players_characters(df),
                 'post_lengths_overall': analyze_post_lengths(df, by_player=False),
                 'post_lengths_by_player': analyze_post_lengths(df, by_player=True),
+                'post_lengths_by_label_overall': analyze_post_lengths_by_label(df, by_player=False),
+                'post_lengths_by_label_by_player': analyze_post_lengths_by_label(df, by_player=True),
                 'action_vs_dialogue': analyze_action_vs_dialogue(df),
                 'character_mentions': analyze_character_mentions(df),
                 'dice_roll_frequency': analyze_dice_roll_frequency(df),
@@ -1219,3 +1388,64 @@ def show_cache_status(cache_dir: str = 'campaign_stats_cache') -> None:
         print()
     
     print(f"Total cache size: {total_size:.2f} MB")
+
+
+def calculate_player_campaign_participation(all_results: Dict) -> Dict[str, int]:
+    """
+    Calculate the number of campaigns each player participated in.
+    
+    Args:
+        all_results (Dict): Dictionary with campaign analysis results from analyze_all_campaigns()
+                           Expected structure: {'per_campaign': {campaign_id: {...}}}
+        
+    Returns:
+        Dict[str, int]: Dictionary with player names as keys and campaign count as values
+                       Sorted by campaign count (descending) then by player name
+        
+    Example:
+        {'alice': 5, 'bob': 3, 'charlie': 2, 'david': 1}
+    """
+    player_campaign_counts = {}
+    
+    # Extract per-campaign results
+    per_campaign_results = all_results.get('per_campaign', {})
+    
+    if not per_campaign_results:
+        print("Warning: No per-campaign results found in all_results")
+        return {}
+    
+    # Iterate through each campaign's results
+    for campaign_id, campaign_results in per_campaign_results.items():
+        # Get players from the post_lengths_by_player analysis
+        post_lengths_by_player = campaign_results.get('post_lengths_by_player', {})
+        
+        # Extract unique players from this campaign
+        campaign_players = set()
+        
+        # Add players from post_lengths_by_player results
+        for player_name in post_lengths_by_player.keys():
+            if player_name != 'overall':  # Skip overall statistics
+                campaign_players.add(player_name)
+        
+        # Also check time_intervals_by_player as backup
+        time_intervals_by_player = campaign_results.get('time_intervals_by_player', {})
+        for player_name in time_intervals_by_player.keys():
+            if player_name != 'overall':
+                campaign_players.add(player_name)
+        
+        # Also check unique_players_characters for completeness
+        unique_players_chars = campaign_results.get('unique_players_characters', {})
+        final_players = unique_players_chars.get('final_unique_players', 0)
+        
+        # If we have players from the analysis results, count them
+        for player_name in campaign_players:
+            if player_name in player_campaign_counts:
+                player_campaign_counts[player_name] += 1
+            else:
+                player_campaign_counts[player_name] = 1
+    
+    # Sort by campaign count (descending), then by player name (ascending)
+    sorted_players = sorted(player_campaign_counts.items(), 
+                           key=lambda x: (-x[1], x[0]))
+    
+    return dict(sorted_players)
