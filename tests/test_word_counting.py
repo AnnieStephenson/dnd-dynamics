@@ -437,8 +437,8 @@ def test_aggregation_functions_use_all_words():
         "campaign-2": campaign_2_df
     }
     
-    # Run analysis
-    all_results = analyze_all_campaigns(campaign_dataframes, show_progress=False)
+    # Run analysis with original JSON data
+    all_results = analyze_all_campaigns(campaign_dataframes, test_data, show_progress=False)
     
     # Check aggregated results
     aggregated = all_results['aggregated']

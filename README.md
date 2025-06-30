@@ -13,6 +13,7 @@ This toolkit analyzes D&D gameplay logs stored in JSON format to extract meaning
 
 ### Main Capabilities
 - ⚡ **Basic Metrics Analysis**: Time intervals, post lengths, player statistics, character mentions
+- 📋 **Paragraph-Level Action Analysis**: Track action types (spells, weapons, dialogue, rolls) and character labels at paragraph granularity
 - 🧠 **Creativity Analysis**: Semantic embeddings, topic modeling, novelty detection
 - 📊 **Multi-Campaign Comparisons**: Statistical aggregation and visualization across datasets
 - 🚀 **Intelligent Caching**: 2500x speedup with incremental processing for large datasets
@@ -49,7 +50,8 @@ dnd-dynamics/
 #### 🔧 **Analysis Modules**
 - **`dnd_analysis.py`**: Single-campaign statistical analysis functions
   - Time interval analysis, player statistics, character mentions, player participation
-  - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`, `calculate_player_campaign_participation()`
+  - **Paragraph-level action analysis**: Analyze action types (spells, weapons, dialogue, etc.) and character labels at paragraph level
+  - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`, `analyze_paragraph_actions()`, `calculate_player_campaign_participation()`
   
 - **`creative_metrics.py`**: Advanced NLP creativity analysis
   - Semantic embeddings, topic modeling, novelty scoring
@@ -106,6 +108,64 @@ analyze_campaigns(max_campaigns=10, force_refresh=True)  # Cache corruption
 
 ---
 
+## 📋 Paragraph-Level Action Analysis
+
+### Overview
+
+The paragraph-level action analysis feature provides granular insights into D&D gameplay by analyzing individual paragraphs within messages. This goes beyond simple message classification to understand specific action types and character voice at the paragraph level.
+
+### Features
+
+- **Action Type Detection**: Identifies paragraphs containing spells, weapons, dialogue, dice rolls, name mentions
+- **Character Label Analysis**: Tracks in-character vs out-of-character content at paragraph granularity
+- **Multi-Campaign Aggregation**: Combines paragraph-level statistics across entire datasets
+- **Backward Compatibility**: Works alongside existing message-level analysis functions
+
+### Usage
+
+```python
+import dnd_analysis as dnd
+
+# Load campaign data with paragraph structure
+json_data = load_campaign_json('Game-Data/data-labels.json')
+
+# Analyze paragraph actions for single campaign
+results = dnd.analyze_paragraph_actions(json_data)
+
+# Multi-campaign analysis with paragraph actions
+campaign_dfs, json_data = dnd.load_all_campaigns('Game-Data/data-labels.json', return_json=True)
+all_results = dnd.analyze_all_campaigns(campaign_dfs, json_data)
+
+# Access paragraph action results
+paragraph_stats = all_results['aggregated']['paragraph_actions']
+print(f"Spells cast: {paragraph_stats['spells_paragraphs']}")
+print(f"In-character content: {paragraph_stats['in_character_percentage']:.1f}%")
+```
+
+### Action Types Tracked
+
+- **`name_mentions`**: Paragraphs referencing character names
+- **`spells`**: Paragraphs involving spell casting
+- **`dialogue`**: Paragraphs containing character speech
+- **`roll`**: Paragraphs with dice rolling mechanics
+- **`weapon`**: Paragraphs involving weapon use
+- **`no_action`**: Paragraphs with no specific action type
+
+### Character Labels Tracked
+
+- **`in-character`**: Content written from character perspective
+- **`out-of-character`**: Meta-commentary and player discussion
+- **`mixed`**: Paragraphs containing both in-character and OOC content
+- **`unlabeled`**: Paragraphs without label information
+
+### Requirements
+
+- Requires JSON data with paragraph structure (not just processed DataFrames)
+- Compatible with both single-campaign and multi-campaign analysis workflows
+- Gracefully handles missing or malformed paragraph data
+
+---
+
 ## 📋 Results Dictionary Structure
 
 ### Basic Metrics Results Structure
@@ -155,6 +215,19 @@ campaign_result = {
         'unique_characters_mentioned': 8,                   # Unique names
         'top_mentions': {'Gandalf': 15, 'Aragorn': 12},    # Most mentioned
         'full_counts': pd.Series(...)                       # Complete counts
+    },
+    'paragraph_actions': {                                  # NEW: Paragraph-level action analysis
+        'name_mentions_paragraphs': 45,                    # Paragraphs with name mentions
+        'spells_paragraphs': 32,                           # Paragraphs with spell casting
+        'dialogue_paragraphs': 78,                         # Paragraphs with dialogue
+        'roll_paragraphs': 23,                             # Paragraphs with dice rolls
+        'weapon_paragraphs': 19,                           # Paragraphs with weapon use
+        'no_action_paragraphs': 156,                       # Paragraphs with no specific action
+        'total_paragraphs': 353,                           # Total paragraphs analyzed
+        'in_character_paragraphs': 267,                    # In-character paragraphs
+        'out_of_character_paragraphs': 52,                 # Out-of-character paragraphs
+        'mixed_paragraphs': 28,                            # Mixed content paragraphs
+        'unlabeled_paragraphs': 6                          # Unlabeled paragraphs
     }
 }
 

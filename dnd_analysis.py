@@ -448,8 +448,173 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
     
     return results
 
+def analyze_paragraph_actions(json_data: Dict) -> Dict:
+    """
+    Analyze paragraph-level action types based on actual data structure.
+    
+    This function examines the 'actions' field in each paragraph to count
+    different types of actions: name_mentions, spells, dialogue, roll, weapon.
+    
+    Args:
+        json_data: Dictionary containing campaign data with paragraph structure
+        
+    Returns:
+        Dict containing paragraph-level action statistics and character label counts
+    """
+    
+    # Initialize counters
+    action_counts = {
+        'name_mentions_paragraphs': 0,
+        'spells_paragraphs': 0,
+        'dialogue_paragraphs': 0,
+        'roll_paragraphs': 0,
+        'weapon_paragraphs': 0,
+        'no_action_paragraphs': 0,
+        'total_paragraphs': 0,
+        'in_character_paragraphs': 0,
+        'out_of_character_paragraphs': 0,
+        'mixed_paragraphs': 0,
+        'unlabeled_paragraphs': 0
+    }
+    
+    # Track daily trends for time series analysis
+    daily_action_counts = {}
+    
+    # Process each campaign and message
+    for campaign_id, messages in json_data.items():
+        for message_id, message_data in messages.items():
+            
+            # Process paragraphs if they exist
+            if 'paragraphs' in message_data:
+                paragraphs = message_data.get('paragraphs', {})
+                message_date = message_data.get('date', '')[:10]  # Extract date part
+                
+                # Initialize daily counter if needed
+                if message_date not in daily_action_counts:
+                    daily_action_counts[message_date] = {
+                        'name_mentions': 0, 'spells': 0, 'dialogue': 0, 
+                        'roll': 0, 'weapon': 0, 'no_action': 0
+                    }
+                
+                for para_id, para_data in paragraphs.items():
+                    if isinstance(para_data, dict):
+                        action_counts['total_paragraphs'] += 1
+                        
+                        # Count character labels
+                        para_label = para_data.get('label', 'unlabeled')
+                        if para_label == 'in-character':
+                            action_counts['in_character_paragraphs'] += 1
+                        elif para_label == 'out-of-character':
+                            action_counts['out_of_character_paragraphs'] += 1
+                        elif para_label == 'mixed':
+                            action_counts['mixed_paragraphs'] += 1
+                        else:
+                            action_counts['unlabeled_paragraphs'] += 1
+                        
+                        # Process actions if they exist
+                        para_actions = para_data.get('actions', [])
+                        
+                        if isinstance(para_actions, list):
+                            if len(para_actions) == 0:
+                                action_counts['no_action_paragraphs'] += 1
+                                daily_action_counts[message_date]['no_action'] += 1
+                            else:
+                                # Track which action types this paragraph has (avoid double counting)
+                                paragraph_action_types = set()
+                                
+                                # Count each action type (paragraphs can have multiple types)
+                                for action_type in para_actions:
+                                    action_type_lower = str(action_type).lower()
+                                    
+                                    if 'name' in action_type_lower or 'mention' in action_type_lower:
+                                        paragraph_action_types.add('name_mentions')
+                                    elif 'spell' in action_type_lower or 'magic' in action_type_lower:
+                                        paragraph_action_types.add('spells')
+                                    elif 'dialogue' in action_type_lower or 'talk' in action_type_lower or 'speak' in action_type_lower:
+                                        paragraph_action_types.add('dialogue')
+                                    elif 'roll' in action_type_lower or 'dice' in action_type_lower or 'check' in action_type_lower:
+                                        paragraph_action_types.add('roll')
+                                    elif 'weapon' in action_type_lower or 'attack' in action_type_lower or 'fight' in action_type_lower:
+                                        paragraph_action_types.add('weapon')
+                                
+                                # If no recognized actions found, mark as no_action
+                                if not paragraph_action_types:
+                                    paragraph_action_types.add('no_action')
+                                
+                                # Count each action type found in this paragraph
+                                for action_type in paragraph_action_types:
+                                    if action_type == 'name_mentions':
+                                        action_counts['name_mentions_paragraphs'] += 1
+                                        daily_action_counts[message_date]['name_mentions'] += 1
+                                    elif action_type == 'spells':
+                                        action_counts['spells_paragraphs'] += 1
+                                        daily_action_counts[message_date]['spells'] += 1
+                                    elif action_type == 'dialogue':
+                                        action_counts['dialogue_paragraphs'] += 1
+                                        daily_action_counts[message_date]['dialogue'] += 1
+                                    elif action_type == 'roll':
+                                        action_counts['roll_paragraphs'] += 1
+                                        daily_action_counts[message_date]['roll'] += 1
+                                    elif action_type == 'weapon':
+                                        action_counts['weapon_paragraphs'] += 1
+                                        daily_action_counts[message_date]['weapon'] += 1
+                                    elif action_type == 'no_action':
+                                        action_counts['no_action_paragraphs'] += 1
+                                        daily_action_counts[message_date]['no_action'] += 1
+                        else:
+                            # Handle non-list actions (fallback)
+                            action_counts['no_action_paragraphs'] += 1
+                            daily_action_counts[message_date]['no_action'] += 1
+            
+            # Handle old format messages without paragraph structure
+            else:
+                action_counts['total_paragraphs'] += 1
+                action_counts['unlabeled_paragraphs'] += 1
+                action_counts['no_action_paragraphs'] += 1
+                
+                message_date = message_data.get('date', '')[:10]
+                if message_date not in daily_action_counts:
+                    daily_action_counts[message_date] = {
+                        'name_mentions': 0, 'spells': 0, 'dialogue': 0,
+                        'roll': 0, 'weapon': 0, 'no_action': 0
+                    }
+                daily_action_counts[message_date]['no_action'] += 1
+    
+    # Calculate percentages
+    total_paragraphs = action_counts['total_paragraphs']
+    if total_paragraphs > 0:
+        action_counts.update({
+            'name_mentions_percentage': (action_counts['name_mentions_paragraphs'] / total_paragraphs) * 100,
+            'spells_percentage': (action_counts['spells_paragraphs'] / total_paragraphs) * 100,
+            'dialogue_percentage': (action_counts['dialogue_paragraphs'] / total_paragraphs) * 100,
+            'roll_percentage': (action_counts['roll_paragraphs'] / total_paragraphs) * 100,
+            'weapon_percentage': (action_counts['weapon_paragraphs'] / total_paragraphs) * 100,
+            'no_action_percentage': (action_counts['no_action_paragraphs'] / total_paragraphs) * 100,
+            'in_character_percentage': (action_counts['in_character_paragraphs'] / total_paragraphs) * 100,
+            'out_of_character_percentage': (action_counts['out_of_character_paragraphs'] / total_paragraphs) * 100
+        })
+    else:
+        # Handle empty dataset
+        action_counts.update({
+            'name_mentions_percentage': 0, 'spells_percentage': 0, 'dialogue_percentage': 0,
+            'roll_percentage': 0, 'weapon_percentage': 0, 'no_action_percentage': 0,
+            'in_character_percentage': 0, 'out_of_character_percentage': 0
+        })
+    
+    
+    # Convert daily data to sorted list for time series analysis
+    sorted_dates = sorted(daily_action_counts.keys())
+    action_counts['daily_data'] = daily_action_counts
+    action_counts['dates'] = sorted_dates
+    
+    return action_counts
+
+
 def analyze_action_vs_dialogue(df: pd.DataFrame) -> Dict:
     """
+    DEPRECATED: Legacy function for backward compatibility.
+    Use analyze_paragraph_actions() for detailed action type analysis.
+    
     Analyze time series of action-related vs. dialogue-related posts.
     
     Args:
@@ -675,16 +840,23 @@ def load_all_campaigns(json_file_path: str, max_campaigns: Optional[int] = None,
         total_messages = sum(len(df) for df in campaign_dataframes.values())
         print(f"Total messages across all campaigns: {total_messages:,}")
     
-    return campaign_dataframes
+    if return_json:
+        # Return filtered JSON data for successful campaigns only
+        filtered_json_data = {cid: all_campaigns_data[cid] for cid in campaign_dataframes.keys()}
+        return campaign_dataframes, filtered_json_data
+    else:
+        return campaign_dataframes
 
 
 def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame], 
+                         original_json_data: Optional[Dict] = None,
                          show_progress: bool = True) -> Dict[str, Dict]:
     """
     Apply all analysis functions across multiple campaigns.
     
     Args:
         campaign_dataframes: Dictionary of campaign DataFrames from load_all_campaigns()
+        original_json_data: Optional original JSON data for paragraph-level action analysis
         show_progress: Whether to show progress indicators
         
     Returns:
@@ -731,6 +903,11 @@ def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame],
                 'dice_roll_frequency': analyze_dice_roll_frequency(df),
                 'summary_report': generate_summary_report(df)
             }
+            
+            # Add paragraph-level action analysis if original JSON data is available
+            if original_json_data and campaign_id in original_json_data:
+                single_campaign_data = {campaign_id: original_json_data[campaign_id]}
+                campaign_results['paragraph_actions'] = analyze_paragraph_actions(single_campaign_data)
             
             results['per_campaign'][campaign_id] = campaign_results
             
@@ -864,6 +1041,52 @@ def aggregate_campaign_metrics(per_campaign_results: Dict[str, Dict]) -> Dict:
             'top_mentions_counts': [],
             'full_counts': {}
         }
+    
+    # Aggregate paragraph-level action analysis (if available)
+    paragraph_campaigns = [cid for cid in campaign_ids 
+                          if 'paragraph_actions' in per_campaign_results[cid]]
+    
+    if paragraph_campaigns:
+        # Sum all paragraph action counts across campaigns
+        total_paragraph_actions = {
+            'name_mentions_paragraphs': 0,
+            'spells_paragraphs': 0,
+            'dialogue_paragraphs': 0,
+            'roll_paragraphs': 0,
+            'weapon_paragraphs': 0,
+            'no_action_paragraphs': 0,
+            'total_paragraphs': 0,
+            'in_character_paragraphs': 0,
+            'out_of_character_paragraphs': 0,
+            'mixed_paragraphs': 0,
+            'unlabeled_paragraphs': 0
+        }
+        
+        for campaign_id in paragraph_campaigns:
+            para_data = per_campaign_results[campaign_id]['paragraph_actions']
+            for key in total_paragraph_actions:
+                total_paragraph_actions[key] += para_data.get(key, 0)
+        
+        # Calculate percentages if we have paragraphs
+        if total_paragraph_actions['total_paragraphs'] > 0:
+            total_paras = total_paragraph_actions['total_paragraphs']
+            
+            aggregated['paragraph_actions'] = {
+                **total_paragraph_actions,
+                # Action type percentages
+                'name_mentions_percentage': (total_paragraph_actions['name_mentions_paragraphs'] / total_paras) * 100,
+                'spells_percentage': (total_paragraph_actions['spells_paragraphs'] / total_paras) * 100,
+                'dialogue_percentage': (total_paragraph_actions['dialogue_paragraphs'] / total_paras) * 100,
+                'roll_percentage': (total_paragraph_actions['roll_paragraphs'] / total_paras) * 100,
+                'weapon_percentage': (total_paragraph_actions['weapon_paragraphs'] / total_paras) * 100,
+                'no_action_percentage': (total_paragraph_actions['no_action_paragraphs'] / total_paras) * 100,
+                # Character label percentages
+                'in_character_percentage': (total_paragraph_actions['in_character_paragraphs'] / total_paras) * 100,
+                'out_of_character_percentage': (total_paragraph_actions['out_of_character_paragraphs'] / total_paras) * 100,
+                'mixed_percentage': (total_paragraph_actions['mixed_paragraphs'] / total_paras) * 100,
+                'unlabeled_percentage': (total_paragraph_actions['unlabeled_paragraphs'] / total_paras) * 100,
+                'campaigns_analyzed': len(paragraph_campaigns)
+            }
     
     return aggregated
 
@@ -1231,11 +1454,11 @@ def load_or_compute_incremental(max_campaigns: int,
             print("🔄 Force refresh requested - running fresh analysis...")
         
         # Load campaigns and run analysis
-        campaign_dfs = load_all_campaigns(data_file_path, max_campaigns, show_progress)
+        campaign_dfs, json_data = load_all_campaigns(data_file_path, max_campaigns, show_progress, return_json=True)
         if not campaign_dfs:
             raise ValueError("Failed to load campaigns")
         
-        results = analyze_all_campaigns(campaign_dfs, show_progress)
+        results = analyze_all_campaigns(campaign_dfs, json_data, show_progress)
         
         # Save new cache
         save_campaign_results(results, max_campaigns, data_file_path, cache_dir)
@@ -1257,11 +1480,11 @@ def load_or_compute_incremental(max_campaigns: int,
         if show_progress:
             print("📊 No cached results found - running fresh analysis...")
         
-        campaign_dfs = load_all_campaigns(data_file_path, max_campaigns, show_progress)
+        campaign_dfs, json_data = load_all_campaigns(data_file_path, max_campaigns, show_progress, return_json=True)
         if not campaign_dfs:
             raise ValueError("Failed to load campaigns")
         
-        results = analyze_all_campaigns(campaign_dfs, show_progress)
+        results = analyze_all_campaigns(campaign_dfs, json_data, show_progress)
         save_campaign_results(results, max_campaigns, data_file_path, cache_dir)
         return results
     
@@ -1279,7 +1502,7 @@ def load_or_compute_incremental(max_campaigns: int,
         raise ValueError(f"Failed to load cached results for {cached_campaigns} campaigns")
     
     # Load additional campaigns
-    all_campaign_dfs = load_all_campaigns(data_file_path, max_campaigns, show_progress=False)
+    all_campaign_dfs, all_json_data = load_all_campaigns(data_file_path, max_campaigns, show_progress=False, return_json=True)
     if not all_campaign_dfs:
         raise ValueError("Failed to load campaigns")
     
@@ -1290,13 +1513,14 @@ def load_or_compute_incremental(max_campaigns: int,
     # Determine new campaigns to process (those beyond cached count)
     new_campaign_ids = all_campaign_ids[cached_campaigns:max_campaigns]
     new_campaign_dfs = {cid: all_campaign_dfs[cid] for cid in new_campaign_ids}
+    new_json_data = {cid: all_json_data[cid] for cid in new_campaign_ids}
     
     if show_progress and new_campaign_dfs:
         print(f"⚡ Processing {len(new_campaign_dfs)} additional campaigns...")
     
     # Analyze new campaigns
     if new_campaign_dfs:
-        new_results = analyze_all_campaigns(new_campaign_dfs, show_progress)
+        new_results = analyze_all_campaigns(new_campaign_dfs, new_json_data, show_progress)
         
         # Merge results
         if show_progress:
