@@ -902,7 +902,7 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
     additional_results = {}
     
     from tqdm import tqdm
-    from dnd_analysis import load_dnd_data
+    from analysis.dnd_analysis import load_dnd_data
     
     campaign_iterator = tqdm(campaigns_to_compute, desc="Computing additional creativity metrics") if show_progress else campaigns_to_compute
     
@@ -1026,10 +1026,12 @@ def analyze_creativity_all_campaigns(data_file_path: str = 'Game-Data/data-label
     """
     Apply all existing creative metric functions across multiple campaigns.
     
+    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
+    
     Parameters
     ----------
     data_file_path : str
-        Path to the JSON file containing campaign data
+        Path to campaigns directory or legacy JSON file (auto-detects)
     max_campaigns : int, optional
         Maximum number of campaigns to analyze (None for all)
     cache_dir : str
@@ -1047,12 +1049,218 @@ def analyze_creativity_all_campaigns(data_file_path: str = 'Game-Data/data-label
     import json
     import os
     import pickle
-    import hashlib
-    from tqdm import tqdm
-    from dnd_analysis import load_dnd_data
+    from pathlib import Path
+    from analysis.dnd_analysis import load_dnd_data
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
     
     # Create cache directory
     os.makedirs(cache_dir, exist_ok=True)
+    
+    # Auto-detect whether to use individual files or legacy format
+    data_path = Path(data_file_path)
+    
+    # Check if individual campaigns directory exists
+    if data_path.name == 'data-labels.json':
+        # Legacy path - look for individual campaigns in same directory structure
+        individual_campaigns_dir = data_path.parent / 'individual_campaigns'
+    elif data_path.is_dir():
+        # Direct directory path
+        individual_campaigns_dir = data_path
+    else:
+        # Assume it's a path to the data directory
+        individual_campaigns_dir = data_path.parent / 'individual_campaigns'
+    
+    # Try to use individual campaign files first (more memory efficient)
+    if individual_campaigns_dir.exists() and individual_campaigns_dir.is_dir():
+        return _analyze_creativity_from_individual_files(
+            individual_campaigns_dir, max_campaigns, cache_dir, force_refresh, show_progress
+        )
+    else:
+        # Fallback to legacy JSON file loading
+        if show_progress:
+            print(f"⚠️  Individual campaigns directory not found: {individual_campaigns_dir}")
+            print(f"📁 Falling back to legacy JSON file loading from {data_file_path}")
+        
+        return _analyze_creativity_from_json_file(
+            data_file_path, max_campaigns, cache_dir, force_refresh, show_progress
+        )
+
+
+def _analyze_creativity_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
+                                           cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
+    """
+    Memory-efficient creativity analysis using individual campaign files.
+    
+    Args:
+        campaigns_dir: Path to directory containing individual campaign JSON files
+        max_campaigns: Maximum number of campaigns to analyze (None for all)
+        cache_dir: Directory to store cached results
+        force_refresh: Whether to force recalculation even if cache exists
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with creativity analysis results for each campaign
+    """
+    import json
+    import pickle
+    from pathlib import Path
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    # Get sorted list of campaign files
+    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
+    
+    if not campaign_files:
+        if show_progress:
+            print(f"❌ No campaign files found in {campaigns_dir}")
+        return {}
+    
+    total_available = len(campaign_files)
+    campaigns_to_analyze = min(max_campaigns, total_available) if max_campaigns is not None else total_available
+    
+    # Create cache file name based on number of campaigns
+    cache_file = Path(cache_dir) / f'creativity_analysis_{campaigns_to_analyze}_campaigns.pkl'
+    
+    # Check for existing cache
+    if not force_refresh and cache_file.exists():
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_results = pickle.load(f)
+            if show_progress:
+                print(f"📁 Loaded cached creativity results for {campaigns_to_analyze} campaigns from {cache_file.name}")
+            return cached_results
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Failed to load cache: {e}. Recomputing...")
+    
+    if show_progress:
+        print(f"🧠 Analyzing creativity metrics from individual files in {campaigns_dir}")
+        print(f"📊 Found {total_available} campaign files")
+        if max_campaigns is not None:
+            print(f"🎯 Analyzing first {campaigns_to_analyze} campaigns (max_campaigns={max_campaigns})")
+    
+    # Process only the required number of files
+    files_to_process = campaign_files[:campaigns_to_analyze]
+    all_results = {}
+    
+    # Progress indicator
+    if show_progress and len(files_to_process) > 1:
+        iterator = tqdm(files_to_process, desc="Analyzing campaign creativity")
+    else:
+        iterator = files_to_process
+    
+    successful_campaigns = 0
+    total_messages = 0
+    
+    for campaign_file in iterator:
+        try:
+            # Extract campaign ID from filename (without extension)
+            campaign_id = campaign_file.stem
+            
+            # Load individual campaign file
+            with open(campaign_file, 'r', encoding='utf-8') as f:
+                campaign_data = json.load(f)
+            
+            # Create single-campaign data structure for load_dnd_data
+            single_campaign_data = {campaign_id: campaign_data}
+            
+            # Load using existing function
+            from analysis.dnd_analysis import load_dnd_data
+            df = load_dnd_data(single_campaign_data)
+            
+            if len(df) == 0:
+                continue
+            
+            # Run creativity analysis for this campaign
+            campaign_results = _analyze_single_campaign_creativity(
+                df, campaign_id, campaign_data, show_progress
+            )
+            
+            if campaign_results is not None:
+                all_results[campaign_id] = campaign_results
+                total_messages += len(df)
+                successful_campaigns += 1
+                
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Warning: Failed to analyze creativity for campaign {campaign_file.name}: {e}")
+            continue
+    
+    if show_progress:
+        print(f"✅ Successfully analyzed creativity for {successful_campaigns} campaigns")
+        print(f"📈 Total messages across all campaigns: {total_messages:,}")
+        
+        # Memory efficiency report
+        if max_campaigns is not None and max_campaigns < total_available:
+            memory_saved = total_available - campaigns_to_analyze
+            print(f"💾 Memory optimization: Avoided loading {memory_saved} unnecessary campaigns")
+    
+    # Cache results
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        if show_progress:
+            file_size = os.path.getsize(cache_file) / (1024 * 1024)  # MB
+            print(f"💾 Saved creativity cache: {cache_file.name} ({file_size:.2f} MB)")
+    except Exception as e:
+        if show_progress:
+            print(f"⚠️  Failed to save cache: {e}")
+    
+    return all_results
+
+
+def _analyze_creativity_from_json_file(data_file_path: str, max_campaigns: Optional[int],
+                                     cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
+    """
+    Legacy creativity analysis from single large JSON file.
+    
+    Args:
+        data_file_path: Path to JSON file containing multiple campaigns
+        max_campaigns: Maximum number of campaigns to analyze (None for all)
+        cache_dir: Directory to store cached results
+        force_refresh: Whether to force recalculation even if cache exists
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with creativity analysis results for each campaign
+    """
+    import json
+    import os
+    import pickle
+    from analysis.dnd_analysis import load_dnd_data
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    if show_progress:
+        print(f"📁 Loading campaigns from JSON file: {data_file_path}")
     
     # Load and validate data
     with open(data_file_path, 'r') as f:
@@ -1071,83 +1279,46 @@ def analyze_creativity_all_campaigns(data_file_path: str = 'Game-Data/data-label
             with open(cache_file, 'rb') as f:
                 cached_results = pickle.load(f)
             if show_progress:
-                print(f"Loaded cached results for {len(campaigns)} campaigns from {cache_file}")
+                print(f"📁 Loaded cached creativity results for {len(campaigns)} campaigns from {cache_file}")
             return cached_results
         except Exception as e:
             if show_progress:
-                print(f"Failed to load cache: {e}. Recomputing...")
+                print(f"⚠️  Failed to load cache: {e}. Recomputing...")
+    
+    if show_progress:
+        print(f"📊 Found {len(all_data)} campaigns")
+        if max_campaigns is not None:
+            print(f"🎯 Analyzing first {len(campaigns)} campaigns")
     
     all_results = {}
     
     # Process each campaign
-    campaign_iterator = tqdm(campaigns, desc="Analyzing campaign creativity") if show_progress else campaigns
+    if show_progress and len(campaigns) > 1:
+        campaign_iterator = tqdm(campaigns, desc="Analyzing campaign creativity")
+    else:
+        campaign_iterator = campaigns
     
     for campaign_id in campaign_iterator:
         try:
             # Load single campaign data
-            campaign_data = {campaign_id: all_data[campaign_id]}
-            df = load_dnd_data(campaign_data)
+            campaign_data = all_data[campaign_id]
+            single_campaign_data = {campaign_id: campaign_data}
+            df = load_dnd_data(single_campaign_data)
             
             if len(df) == 0:
                 continue
             
-            campaign_results = {}
+            # Run creativity analysis for this campaign
+            campaign_results = _analyze_single_campaign_creativity(
+                df, campaign_id, campaign_data, show_progress
+            )
             
-            # Get embeddings for all text
-            embeddings = get_embeddings(df)
-            campaign_results['embeddings'] = embeddings
-            
-            # Calculate semantic distances
-            semantic_distances = semantic_distance(df, embeddings=embeddings)
-            campaign_results['semantic_distances'] = semantic_distances
-            
-            # Analyze session novelty
-            novelty_results = session_novelty(df, embeddings=embeddings)
-            campaign_results['session_novelty'] = novelty_results
-            
-            # Topic modeling
-            try:
-                topics_series, topic_model_obj = topic_model(df, embeddings=embeddings)
-                campaign_results['topic_model'] = {
-                    'topics': topics_series,
-                    'model': topic_model_obj
-                }
+            if campaign_results is not None:
+                all_results[campaign_id] = campaign_results
                 
-                # Add topics to DataFrame for transition analysis
-                df_with_topics = df.copy()
-                df_with_topics['topic'] = topics_series
-                
-                # Topic transitions
-                topic_transitions = topic_transition_matrix(df_with_topics, topic_col='topic')
-                campaign_results['topic_transitions'] = topic_transitions
-                
-                # Topic change rate
-                change_rate = topic_change_rate(df_with_topics, topic_col='topic')
-                campaign_results['topic_change_rate'] = {'overall_rate': change_rate.mean(), 'series': change_rate}
-                
-            except Exception as e:
-                if show_progress:
-                    print(f"Topic modeling failed for campaign {campaign_id}: {e}")
-                campaign_results['topic_model'] = None
-                campaign_results['topic_transitions'] = None
-                campaign_results['topic_change_rate'] = None
-            
-            # Store campaign metadata
-            campaign_results['metadata'] = {
-                'campaign_id': campaign_id,
-                'total_messages': len(df),
-                'unique_players': df['player'].nunique(),
-                'date_range': {
-                    'start': df['date'].min().isoformat() if not df['date'].isna().all() else None,
-                    'end': df['date'].max().isoformat() if not df['date'].isna().all() else None
-                }
-            }
-            
-            all_results[campaign_id] = campaign_results
-            
         except Exception as e:
             if show_progress:
-                print(f"Error processing campaign {campaign_id}: {e}")
+                print(f"⚠️  Error processing campaign {campaign_id}: {e}")
             continue
     
     # Cache results
@@ -1155,12 +1326,86 @@ def analyze_creativity_all_campaigns(data_file_path: str = 'Game-Data/data-label
         with open(cache_file, 'wb') as f:
             pickle.dump(all_results, f)
         if show_progress:
-            print(f"Cached results saved to {cache_file}")
+            print(f"💾 Cached creativity results saved to {cache_file}")
     except Exception as e:
         if show_progress:
-            print(f"Failed to save cache: {e}")
+            print(f"⚠️  Failed to save cache: {e}")
     
     return all_results
+
+
+def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dict, show_progress: bool) -> Optional[Dict]:
+    """
+    Run all creativity analysis functions for a single campaign.
+    
+    Args:
+        df: Loaded campaign DataFrame
+        campaign_id: Campaign identifier
+        campaign_data: Raw campaign data
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with creativity analysis results or None if analysis failed
+    """
+    try:
+        campaign_results = {}
+        
+        # Get embeddings for all text
+        embeddings = get_embeddings(df)
+        campaign_results['embeddings'] = embeddings
+        
+        # Calculate semantic distances
+        semantic_distances = semantic_distance(df, embeddings=embeddings)
+        campaign_results['semantic_distances'] = semantic_distances
+        
+        # Analyze session novelty
+        novelty_results = session_novelty(df, embeddings=embeddings)
+        campaign_results['session_novelty'] = novelty_results
+        
+        # Topic modeling
+        try:
+            topics_series, topic_model_obj = topic_model(df, embeddings=embeddings)
+            campaign_results['topic_model'] = {
+                'topics': topics_series,
+                'model': topic_model_obj
+            }
+            
+            # Add topics to DataFrame for transition analysis
+            df_with_topics = df.copy()
+            df_with_topics['topic'] = topics_series
+            
+            # Topic transitions
+            topic_transitions = topic_transition_matrix(df_with_topics, topic_col='topic')
+            campaign_results['topic_transitions'] = topic_transitions
+            
+            # Topic change rate
+            change_rate = topic_change_rate(df_with_topics, topic_col='topic')
+            campaign_results['topic_change_rate'] = {'overall_rate': change_rate.mean(), 'series': change_rate}
+            
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Topic modeling failed for campaign {campaign_id}: {e}")
+            campaign_results['topic_model'] = None
+            campaign_results['topic_transitions'] = None
+            campaign_results['topic_change_rate'] = None
+        
+        # Store campaign metadata
+        campaign_results['metadata'] = {
+            'campaign_id': campaign_id,
+            'total_messages': len(df),
+            'unique_players': df['player'].nunique(),
+            'date_range': {
+                'start': df['date'].min().isoformat() if not df['date'].isna().all() else None,
+                'end': df['date'].max().isoformat() if not df['date'].isna().all() else None
+            }
+        }
+        
+        return campaign_results
+        
+    except Exception as e:
+        if show_progress:
+            print(f"⚠️  Error in creativity analysis for campaign {campaign_id}: {e}")
+        return None
 
 
 def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
@@ -1352,3 +1597,574 @@ def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
     }
     
     return aggregated
+
+
+# ===================================================================
+# DIVERGENT SEMANTIC INTEGRATION (DSI) ANALYSIS
+# ===================================================================
+
+def create_word_scenes(messages, target_words=175):
+    """
+    Segment campaign messages into scenes of approximately target_words length.
+    Never split individual messages - only complete messages per scene.
+    
+    Args:
+        messages: List of message dictionaries with 'text' field
+        target_words: Target word count per scene (default 175)
+    
+    Returns:
+        List of scenes, where each scene is a list of complete messages
+    """
+    scenes = []
+    current_scene = []
+    current_word_count = 0
+    
+    for message in messages:
+        # Get text content from message
+        if isinstance(message, dict):
+            text = message.get('text', '')
+        else:
+            # Handle DataFrame row
+            text = getattr(message, 'text', '')
+        
+        # Count words in this message
+        message_words = len(text.split()) if text else 0
+        
+        # If adding this message would exceed target and we have some content, start new scene
+        if current_word_count + message_words > target_words and current_scene:
+            scenes.append(current_scene)
+            current_scene = [message]
+            current_word_count = message_words
+        else:
+            # Add message to current scene
+            current_scene.append(message)
+            current_word_count += message_words
+    
+    # Add the last scene if it has content
+    if current_scene:
+        scenes.append(current_scene)
+    
+    return scenes
+
+
+# Global cache for BERT models to avoid reloading
+_bert_model_cache = {}
+
+def clear_bert_cache():
+    """Clear the BERT model cache to free memory."""
+    global _bert_model_cache
+    _bert_model_cache.clear()
+    print("🗑️  BERT model cache cleared")
+
+def calculate_dsi_bert(text, model_name="bert-base-uncased"):
+    """
+    Calculate Divergent Semantic Integration using BERT embeddings.
+    Based on Johnson et al. (2023) methodology using layers 6 and 7.
+    
+    Args:
+        text: Input text string (scene text)
+        model_name: BERT model to use
+        
+    Returns:
+        float: DSI score (average cosine distance between word embeddings)
+    """
+    try:
+        from transformers import BertTokenizer, BertModel
+        import torch
+        from sklearn.metrics.pairwise import cosine_similarity
+        import numpy as np
+    except ImportError:
+        print("Warning: transformers, torch, or sklearn not available. DSI analysis requires:")
+        print("pip install transformers torch scikit-learn")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    # Initialize BERT model and tokenizer (with caching)
+    if model_name not in _bert_model_cache:
+        try:
+            print(f"Loading BERT model {model_name} (first time only)...")
+            tokenizer = BertTokenizer.from_pretrained(model_name)
+            model = BertModel.from_pretrained(model_name, output_hidden_states=True)
+            model.eval()
+            _bert_model_cache[model_name] = {'tokenizer': tokenizer, 'model': model}
+            print(f"✅ BERT model {model_name} loaded and cached")
+        except Exception as e:
+            print(f"Error loading BERT model: {e}")
+            return None
+    
+    tokenizer = _bert_model_cache[model_name]['tokenizer']
+    model = _bert_model_cache[model_name]['model']
+    
+    # Tokenize input text
+    tokens = tokenizer.tokenize(text)
+    
+    # Skip if too few tokens for meaningful analysis
+    if len(tokens) < 5:
+        return None
+    
+    # Handle long sequences by truncating
+    max_tokens = 512 - 2  # Account for [CLS] and [SEP] tokens
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+    
+    # Convert to input IDs
+    input_ids = tokenizer.convert_tokens_to_ids(['[CLS]'] + tokens + ['[SEP]'])
+    input_tensor = torch.tensor([input_ids])
+    
+    # Get BERT embeddings
+    with torch.no_grad():
+        outputs = model(input_tensor)
+        hidden_states = outputs.hidden_states
+    
+    # Extract embeddings from layers 6 and 7 (following Johnson et al. methodology)
+    layer_6 = hidden_states[6][0]  # Shape: (seq_len, hidden_size)
+    layer_7 = hidden_states[7][0]  # Shape: (seq_len, hidden_size)
+    
+    # Average layers 6 and 7
+    combined_embeddings = (layer_6 + layer_7) / 2
+    
+    # Remove [CLS] and [SEP] tokens, keep only actual word embeddings
+    word_embeddings = combined_embeddings[1:-1]  # Shape: (num_tokens, hidden_size)
+    
+    # Skip if too few word embeddings
+    if word_embeddings.shape[0] < 2:
+        return None
+    
+    # Calculate pairwise cosine similarities
+    embeddings_np = word_embeddings.numpy()
+    cosine_sim_matrix = cosine_similarity(embeddings_np)
+    
+    # Extract upper triangle (excluding diagonal) to avoid double counting
+    n = cosine_sim_matrix.shape[0]
+    upper_triangle_indices = np.triu_indices(n, k=1)
+    cosine_similarities = cosine_sim_matrix[upper_triangle_indices]
+    
+    # Convert to cosine distances (distance = 1 - similarity)
+    cosine_distances = 1 - cosine_similarities
+    
+    # Return average cosine distance as DSI score
+    dsi_score = np.mean(cosine_distances)
+    
+    return float(dsi_score)
+
+
+def analyze_campaign_dsi_over_time(campaign_data):
+    """
+    Calculate DSI scores for each scene in a campaign over time.
+    
+    Args:
+        campaign_data: Campaign message data (dict with message IDs as keys)
+        
+    Returns:
+        dict: {
+            'scene_dsi_scores': [list of DSI scores],
+            'scene_word_counts': [list of word counts per scene],
+            'time_averaged_dsi': float,
+            'scene_count': int
+        }
+    """
+    # Convert campaign data to list of messages
+    messages = []
+    for message_id, message_info in campaign_data.items():
+        # Extract text from different possible formats
+        text = ''
+        if 'text' in message_info:
+            text = message_info['text']
+        elif 'paragraphs' in message_info:
+            # Combine paragraph text
+            paragraphs = message_info['paragraphs']
+            text_segments = []
+            for para_id in sorted(paragraphs.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+                para_data = paragraphs[para_id]
+                if isinstance(para_data, dict) and 'text' in para_data:
+                    text_segments.append(para_data['text'])
+            text = ' '.join(text_segments)
+        
+        messages.append({'text': text, 'message_id': message_id})
+    
+    # Create scenes
+    scenes = create_word_scenes(messages, target_words=175)
+    
+    # Calculate DSI for each scene
+    scene_dsi_scores = []
+    scene_word_counts = []
+    total_scenes = len(scenes)
+    
+    print(f"Processing {total_scenes} scenes for DSI analysis...")
+    
+    for i, scene in enumerate(scenes):
+        # Progress indicator
+        if i % 100 == 0:
+            print(f"  Scene {i+1}/{total_scenes} ({100*(i+1)/total_scenes:.1f}%)")
+        
+        # Combine all text in the scene
+        scene_text = ' '.join([msg['text'] for msg in scene if msg.get('text')])
+        
+        # Count words in scene
+        word_count = len(scene_text.split()) if scene_text else 0
+        scene_word_counts.append(word_count)
+        
+        # Calculate DSI score
+        if scene_text.strip():
+            dsi_score = calculate_dsi_bert(scene_text)
+            if dsi_score is not None:
+                scene_dsi_scores.append(dsi_score)
+            else:
+                scene_dsi_scores.append(np.nan)
+        else:
+            scene_dsi_scores.append(np.nan)
+    
+    print(f"✅ Completed DSI analysis for {total_scenes} scenes")
+    
+    # Calculate time-averaged DSI (excluding NaN values)
+    valid_scores = [score for score in scene_dsi_scores if not np.isnan(score)]
+    time_averaged_dsi = np.mean(valid_scores) if valid_scores else np.nan
+    
+    return {
+        'scene_dsi_scores': scene_dsi_scores,
+        'scene_word_counts': scene_word_counts,
+        'time_averaged_dsi': time_averaged_dsi,
+        'scene_count': len(scenes),
+        'valid_scores_count': len(valid_scores)
+    }
+
+
+def calculate_campaign_average_dsi(campaign_data):
+    """
+    Calculate time-averaged DSI for entire campaign.
+    
+    Args:
+        campaign_data: Campaign message data
+        
+    Returns:
+        float: Average DSI score across all scenes
+    """
+    analysis = analyze_campaign_dsi_over_time(campaign_data)
+    return analysis['time_averaged_dsi']
+
+
+def analyze_dsi_all_campaigns(data_file_path: str = 'data/raw-human-games/data-labels.json',
+                            max_campaigns: Optional[int] = None,
+                            show_progress: bool = True,
+                            cache_dir: str = 'dsi_cache',
+                            force_refresh: bool = False) -> Dict:
+    """
+    Calculate DSI metrics for multiple campaigns with memory-efficient loading.
+    
+    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
+    
+    Args:
+        data_file_path: Path to campaigns directory or legacy JSON file (auto-detects)
+        max_campaigns: Maximum number of campaigns to process
+        show_progress: Whether to show progress indicators
+        cache_dir: Directory to store cache files
+        force_refresh: Whether to force recalculation even if cache exists
+        
+    Returns:
+        dict: Campaign IDs mapped to DSI analysis results
+    """
+    import os
+    import pickle
+    from pathlib import Path
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    # Create cache directory
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(exist_ok=True)
+    
+    # Auto-detect whether to use individual files or legacy format
+    data_path = Path(data_file_path)
+    
+    # Check if individual campaigns directory exists
+    if data_path.name == 'data-labels.json':
+        # Legacy path - look for individual campaigns in same directory structure
+        individual_campaigns_dir = data_path.parent / 'individual_campaigns'
+    elif data_path.is_dir():
+        # Direct directory path
+        individual_campaigns_dir = data_path
+    else:
+        # Assume it's a path to the data directory
+        individual_campaigns_dir = data_path.parent / 'individual_campaigns'
+    
+    # Try to use individual campaign files first (more memory efficient)
+    if individual_campaigns_dir.exists() and individual_campaigns_dir.is_dir():
+        return _analyze_dsi_from_individual_files(
+            individual_campaigns_dir, max_campaigns, cache_dir, force_refresh, show_progress
+        )
+    else:
+        # Fallback to legacy JSON file loading
+        if show_progress:
+            print(f"⚠️  Individual campaigns directory not found: {individual_campaigns_dir}")
+            print(f"📁 Falling back to legacy JSON file loading from {data_file_path}")
+        
+        return _analyze_dsi_from_json_file(
+            data_file_path, max_campaigns, cache_dir, force_refresh, show_progress
+        )
+
+
+def _analyze_dsi_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
+                                     cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
+    """
+    Memory-efficient DSI analysis using individual campaign files.
+    
+    Args:
+        campaigns_dir: Path to directory containing individual campaign JSON files
+        max_campaigns: Maximum number of campaigns to analyze (None for all)
+        cache_dir: Directory to store cached results
+        force_refresh: Whether to force recalculation even if cache exists
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with DSI analysis results for each campaign
+    """
+    import json
+    import pickle
+    from pathlib import Path
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    # Get sorted list of campaign files
+    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
+    
+    if not campaign_files:
+        if show_progress:
+            print(f"❌ No campaign files found in {campaigns_dir}")
+        return {}
+    
+    total_available = len(campaign_files)
+    campaigns_to_analyze = min(max_campaigns, total_available) if max_campaigns is not None else total_available
+    
+    # Create cache file name based on number of campaigns
+    cache_file = Path(cache_dir) / f'dsi_analysis_{campaigns_to_analyze}_campaigns.pkl'
+    
+    # Check for existing cache
+    if not force_refresh and cache_file.exists():
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_results = pickle.load(f)
+            if show_progress:
+                print(f"📁 Loaded cached DSI results for {campaigns_to_analyze} campaigns from {cache_file.name}")
+            return cached_results
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Failed to load cache: {e}. Recomputing...")
+    
+    if show_progress:
+        print(f"🧠 Analyzing DSI metrics from individual files in {campaigns_dir}")
+        print(f"📊 Found {total_available} campaign files")
+        if max_campaigns is not None:
+            print(f"🎯 Analyzing first {campaigns_to_analyze} campaigns (max_campaigns={max_campaigns})")
+    
+    # Process only the required number of files
+    files_to_process = campaign_files[:campaigns_to_analyze]
+    all_results = {}
+    
+    # Progress indicator
+    if show_progress and len(files_to_process) > 1:
+        iterator = tqdm(files_to_process, desc="Analyzing campaign DSI")
+    else:
+        iterator = files_to_process
+    
+    successful_campaigns = 0
+    total_scenes = 0
+    
+    for campaign_file in iterator:
+        try:
+            # Extract campaign ID from filename (without extension)
+            campaign_id = campaign_file.stem
+            
+            # Load individual campaign file
+            with open(campaign_file, 'r', encoding='utf-8') as f:
+                campaign_data = json.load(f)
+            
+            # Run DSI analysis for this campaign
+            campaign_results = _analyze_single_campaign_dsi(
+                campaign_data, campaign_id, show_progress
+            )
+            
+            if campaign_results is not None:
+                all_results[campaign_id] = campaign_results
+                total_scenes += campaign_results.get('scene_count', 0)
+                successful_campaigns += 1
+                
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Warning: Failed to analyze DSI for campaign {campaign_file.name}: {e}")
+            continue
+    
+    if show_progress:
+        print(f"✅ Successfully analyzed DSI for {successful_campaigns} campaigns")
+        print(f"📈 Total scenes across all campaigns: {total_scenes:,}")
+        
+        # Memory efficiency report
+        if max_campaigns is not None and max_campaigns < total_available:
+            memory_saved = total_available - campaigns_to_analyze
+            print(f"💾 Memory optimization: Avoided loading {memory_saved} unnecessary campaigns")
+    
+    # Cache results
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        if show_progress:
+            import os
+            file_size = os.path.getsize(cache_file) / (1024 * 1024)  # MB
+            print(f"💾 Saved DSI cache: {cache_file.name} ({file_size:.2f} MB)")
+    except Exception as e:
+        if show_progress:
+            print(f"⚠️  Failed to save cache: {e}")
+    
+    return all_results
+
+
+def _analyze_dsi_from_json_file(data_file_path: str, max_campaigns: Optional[int],
+                              cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
+    """
+    Legacy DSI analysis from single large JSON file.
+    
+    Args:
+        data_file_path: Path to JSON file containing multiple campaigns
+        max_campaigns: Maximum number of campaigns to analyze (None for all)
+        cache_dir: Directory to store cached results
+        force_refresh: Whether to force recalculation even if cache exists
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with DSI analysis results for each campaign
+    """
+    import json
+    import os
+    import pickle
+    from pathlib import Path
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    if show_progress:
+        print(f"📁 Loading campaigns from JSON file: {data_file_path}")
+    
+    # Load and validate data
+    with open(data_file_path, 'r') as f:
+        all_data = json.load(f)
+    
+    campaigns = list(all_data.keys())
+    if max_campaigns:
+        campaigns = campaigns[:max_campaigns]
+    
+    # Create cache file name
+    cache_file = Path(cache_dir) / f'dsi_analysis_{len(campaigns)}_campaigns.pkl'
+    
+    # Check for existing cache
+    if not force_refresh and cache_file.exists():
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_results = pickle.load(f)
+            if show_progress:
+                print(f"📁 Loaded cached DSI results for {len(campaigns)} campaigns from {cache_file.name}")
+            return cached_results
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Failed to load cache: {e}. Recomputing...")
+    
+    if show_progress:
+        print(f"📊 Found {len(all_data)} campaigns")
+        if max_campaigns is not None:
+            print(f"🎯 Analyzing first {len(campaigns)} campaigns")
+    
+    all_results = {}
+    
+    # Process each campaign
+    if show_progress and len(campaigns) > 1:
+        campaign_iterator = tqdm(campaigns, desc="Analyzing campaign DSI")
+    else:
+        campaign_iterator = campaigns
+    
+    for campaign_id in campaign_iterator:
+        try:
+            # Load single campaign data
+            campaign_data = all_data[campaign_id]
+            
+            # Run DSI analysis for this campaign
+            campaign_results = _analyze_single_campaign_dsi(
+                campaign_data, campaign_id, show_progress
+            )
+            
+            if campaign_results is not None:
+                all_results[campaign_id] = campaign_results
+                
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Error processing campaign {campaign_id}: {e}")
+            continue
+    
+    # Cache results
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        if show_progress:
+            import os
+            file_size = os.path.getsize(cache_file) / (1024 * 1024)  # MB
+            print(f"💾 Saved DSI cache: {cache_file.name} ({file_size:.2f} MB)")
+    except Exception as e:
+        if show_progress:
+            print(f"⚠️  Failed to save cache: {e}")
+    
+    return all_results
+
+
+def _analyze_single_campaign_dsi(campaign_data: dict, campaign_id: str, show_progress: bool) -> Optional[Dict]:
+    """
+    Run DSI analysis for a single campaign.
+    
+    Args:
+        campaign_data: Raw campaign data
+        campaign_id: Campaign identifier
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with DSI analysis results or None if analysis failed
+    """
+    try:
+        # Use the existing analyze_campaign_dsi_over_time function
+        dsi_analysis = analyze_campaign_dsi_over_time(campaign_data)
+        
+        # Add campaign metadata
+        dsi_analysis['metadata'] = {
+            'campaign_id': campaign_id,
+            'total_messages': len(campaign_data),
+        }
+        
+        return dsi_analysis
+        
+    except Exception as e:
+        if show_progress:
+            print(f"⚠️  Error in DSI analysis for campaign {campaign_id}: {e}")
+        return None

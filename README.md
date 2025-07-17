@@ -30,19 +30,18 @@ This toolkit analyzes D&D gameplay logs stored in JSON format to extract meaning
 
 ```
 dnd-dynamics/
-├── dnd_analysis.py                      # Core single-campaign basic metrics
-├── creative_metrics.py                  # Advanced NLP creativity analysis
+├── dnd_analysis.py                       # Core single-campaign basic metrics
+├── interaction_analysis.py              # Advanced NLP interaction analysis
 ├── tutorial.ipynb                       # Single-campaign basic walkthrough
-├── tutorial_creativity.ipynb            # Single-campaign creativity analysis
-├── multi_campaign_tutorial.ipynb       # Multi-campaign basic metrics
-├── creativity_comparison_tutorial.ipynb # Multi-campaign creativity comparison
-├── requirements.txt                     # Python dependencies
+├── multi_campaign_tutorial.ipynb        # Multi-campaign basic metrics
+├── interaction_comparison_tutorial.ipynb # Multi-campaign interaction comparison
+├── requirements.txt                      # Python dependencies
 ├── Game-Data/
-│   └── data-labels.json                # Input campaign data
-├── campaign_stats_cache/               # Cached analysis results
-│   ├── basic_stats_N_campaigns.pkl    # Basic metrics cache
-│   └── creativity_analysis_N_campaigns.pkl # Creativity cache
-└── Plots/                             # Generated visualizations
+│   └── data-labels.json                 # Input campaign data
+├── campaign_stats_cache/                # Cached analysis results
+│   ├── basic_stats_N_campaigns.pkl     # Basic metrics cache
+│   └── creativity_analysis_N_campaigns.pkl # Interaction cache
+└── Plots/                              # Generated visualizations
 ```
 
 ### Core Components
@@ -53,15 +52,14 @@ dnd-dynamics/
   - **Paragraph-level action analysis**: Analyze action types (spells, weapons, dialogue, etc.) and character labels at paragraph level
   - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`, `analyze_paragraph_actions()`, `calculate_player_campaign_participation()`
   
-- **`creative_metrics.py`**: Advanced NLP creativity analysis
+- **`interaction_analysis.py`**: Advanced NLP interaction analysis
   - Semantic embeddings, topic modeling, novelty scoring
   - Functions: `get_embeddings()`, `semantic_distance()`, `topic_model()`
 
 #### 📓 **Tutorial Notebooks**
 - **`tutorial.ipynb`**: Basic single-campaign analysis with visualizations
-- **`tutorial_creativity.ipynb`**: Creativity analysis for one campaign
 - **`multi_campaign_tutorial.ipynb`**: Compare basic metrics across campaigns
-- **`creativity_comparison_tutorial.ipynb`**: Advanced creativity comparisons
+- **`interaction_comparison_tutorial.ipynb`**: Advanced interaction analysis comparisons
 
 #### 📊 **Data Files**
 - **`Game-Data/data-labels.json`**: Input data in nested JSON format
@@ -77,8 +75,8 @@ dnd-dynamics/
 campaign_stats_cache/
 ├── basic_stats_5_campaigns.pkl          # Basic metrics for 5 campaigns
 ├── basic_stats_50_campaigns.pkl         # Basic metrics for 50 campaigns  
-├── creativity_analysis_5_campaigns.pkl  # Creativity metrics for 5 campaigns
-└── creativity_analysis_50_campaigns.pkl # Creativity metrics for 50 campaigns
+├── creativity_analysis_5_campaigns.pkl  # Interaction metrics for 5 campaigns
+└── creativity_analysis_50_campaigns.pkl # Interaction metrics for 50 campaigns
 ```
 
 ### Incremental Processing Logic
@@ -433,7 +431,7 @@ print(f"  Avg interval: {campaign_data['time_intervals']['avg_interval_hours']:.
 ### 3. Label-Aware Creativity Analysis Workflow
 
 ```python
-from creative_metrics import analyze_creativity_all_campaigns, aggregate_creativity_metrics
+from interaction_analysis import analyze_creativity_all_campaigns, aggregate_creativity_metrics
 import matplotlib.pyplot as plt
 
 # Analyze creativity across 5 campaigns with label-aware processing
@@ -780,7 +778,7 @@ The test suite follows these principles:
 
 ### Extending the Analysis
 The modular design makes it easy to add new metrics:
-1. Add functions to `dnd_analysis.py` or `creative_metrics.py`
+1. Add functions to `dnd_analysis.py` or `interaction_analysis.py`
 2. Update the multi-campaign processing loops
 3. Add visualization code to the tutorial notebooks
 4. Update this README with new capabilities

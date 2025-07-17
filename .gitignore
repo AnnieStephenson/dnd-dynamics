@@ -186,8 +186,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Game Data
-Game-Data/
+# Data and plots
+data/
+tutorials/plots/
 
 # Claude Code documentation
 CLAUDE.md
@@ -198,3 +199,29 @@ CLAUDE.md
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# API Keys and Secrets - NEVER COMMIT THESE
+api_key.txt
+api_keys.txt
+*.api_key
+*.key
+.env.local
+.env.*.local
+*_api_key.txt
+*_secret.txt
+secrets.txt
+secrets.json
+config/secrets.json
+config/api_keys.json
+
+# Common API key patterns
+openai_api_key.txt
+anthropic_api_key.txt
+claude_api_key.txt
+gemini_api_key.txt
+huggingface_api_key.txt
+
+# Backup files that might contain keys
+*.backup
+*.bak
+*~

@@ -13,6 +13,7 @@ import numpy as np
 import re
 from typing import Dict, List, Tuple, Optional, Union
 from datetime import datetime, timedelta
+from pathlib import Path
 
 def load_dnd_data(json_data: Dict) -> pd.DataFrame:
     """
@@ -88,6 +89,30 @@ def load_dnd_data(json_data: Dict) -> pd.DataFrame:
                             if 'paragraph_actions' not in actions:
                                 actions['paragraph_actions'] = []
                             actions['paragraph_actions'].extend(para_actions)
+                    
+                    # Fallback classification for paragraphs without existing action labels
+                    elif isinstance(para_data, dict) and 'text' in para_data and 'actions' not in para_data:
+                        para_text = para_data['text'].lower()
+                        action_type = None
+                        
+                        # Simple rule-based classification for unlabeled paragraphs
+                        if 'roll' in para_text or 'd20' in para_text or 'dice' in para_text:
+                            action_type = 'roll'
+                        elif any(word in para_text for word in ['says', 'asks', 'replies', '"', "'"]):
+                            action_type = 'dialogue'
+                        elif any(word in para_text for word in ['spell', 'cast', 'magic']):
+                            action_type = 'spells'
+                        elif any(word in para_text for word in ['attack', 'sword', 'weapon', 'hit']):
+                            action_type = 'weapon'
+                        # Note: name_mentions would require more complex analysis
+                        
+                        # Add the classified action to the actions structure
+                        if action_type:
+                            if not isinstance(actions, dict):
+                                actions = {}
+                            if 'paragraph_actions' not in actions:
+                                actions['paragraph_actions'] = []
+                            actions['paragraph_actions'].append(action_type)
             
             row = {
                 'campaign_id': campaign_id,
@@ -770,19 +795,184 @@ def generate_summary_report(df: pd.DataFrame) -> Dict:
 # ===================================================================
 
 def load_all_campaigns(json_file_path: str, max_campaigns: Optional[int] = None, 
-                      show_progress: bool = True) -> Dict[str, pd.DataFrame]:
+                      show_progress: bool = True, return_json: bool = False) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
-    Load and process multiple campaigns from a JSON file.
+    Load and process multiple campaigns from individual campaign files.
+    
+    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
+    
+    Args:
+        json_file_path: Path to campaigns directory or legacy JSON file (auto-detects)
+        max_campaigns: Maximum number of campaigns to load (None for all)
+        show_progress: Whether to show progress indicators
+        return_json: If True, return both DataFrames and original JSON data
+        
+    Returns:
+        Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
+        OR Tuple[Dict[str, pd.DataFrame], Dict]: (DataFrames, JSON data) if return_json=True
+    """
+    import json
+    
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    # Auto-detect whether to use individual files or legacy format
+    json_path = Path(json_file_path)
+    
+    # Check if individual campaigns directory exists
+    if json_path.name == 'data-labels.json':
+        # Legacy path - look for individual campaigns in same directory structure
+        individual_campaigns_dir = json_path.parent / 'individual_campaigns'
+    elif json_path.is_dir():
+        # Direct directory path
+        individual_campaigns_dir = json_path
+    else:
+        # Assume it's a path to the data directory
+        individual_campaigns_dir = json_path.parent / 'individual_campaigns'
+    
+    # Try to use individual campaign files first (more memory efficient)
+    if individual_campaigns_dir.exists() and individual_campaigns_dir.is_dir():
+        return _load_campaigns_from_individual_files(
+            individual_campaigns_dir, max_campaigns, show_progress, return_json
+        )
+    else:
+        # Fallback to legacy JSON file loading
+        if show_progress:
+            print(f"⚠️  Individual campaigns directory not found: {individual_campaigns_dir}")
+            print(f"📁 Falling back to legacy JSON file loading from {json_file_path}")
+        
+        return _load_campaigns_from_json_file(
+            json_file_path, max_campaigns, show_progress, return_json
+        )
+
+
+def _load_campaigns_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int], 
+                                        show_progress: bool, return_json: bool) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
+    """
+    Memory-efficient loading from individual campaign files.
+    
+    Args:
+        campaigns_dir: Path to directory containing individual campaign JSON files
+        max_campaigns: Maximum number of campaigns to load (None for all)
+        show_progress: Whether to show progress indicators
+        return_json: If True, return both DataFrames and original JSON data
+        
+    Returns:
+        Campaign DataFrames and optionally JSON data
+    """
+    import json
+    
+    # Import tqdm for progress bars
+    if show_progress:
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print("Warning: tqdm not available, progress bars disabled")
+            show_progress = False
+            tqdm = None
+    else:
+        tqdm = None
+    
+    # Get sorted list of campaign files
+    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
+    
+    if not campaign_files:
+        if show_progress:
+            print(f"❌ No campaign files found in {campaigns_dir}")
+        return {} if not return_json else ({}, {})
+    
+    total_available = len(campaign_files)
+    campaigns_to_load = min(max_campaigns, total_available) if max_campaigns is not None else total_available
+    
+    if show_progress:
+        print(f"📂 Loading campaigns from individual files in {campaigns_dir}")
+        print(f"📊 Found {total_available} campaign files")
+        if max_campaigns is not None:
+            print(f"🎯 Loading first {campaigns_to_load} campaigns (max_campaigns={max_campaigns})")
+    
+    # Process only the required number of files
+    files_to_process = campaign_files[:campaigns_to_load]
+    campaign_dataframes = {}
+    json_data = {}
+    
+    # Progress indicator
+    if show_progress and len(files_to_process) > 1:
+        iterator = tqdm(files_to_process, desc="Loading campaigns")
+    else:
+        iterator = files_to_process
+    
+    successful_campaigns = 0
+    total_messages = 0
+    
+    for campaign_file in iterator:
+        try:
+            # Extract campaign ID from filename (without extension)
+            campaign_id = campaign_file.stem
+            
+            # Load individual campaign file
+            with open(campaign_file, 'r', encoding='utf-8') as f:
+                campaign_data = json.load(f)
+            
+            # Create single-campaign data structure for load_dnd_data
+            single_campaign_data = {campaign_id: campaign_data}
+            
+            # Load using existing function
+            df = load_dnd_data(single_campaign_data)
+            
+            # Only keep non-empty campaigns
+            if len(df) > 0:
+                campaign_dataframes[campaign_id] = df
+                total_messages += len(df)
+                successful_campaigns += 1
+                
+                # Store JSON data if requested
+                if return_json:
+                    json_data[campaign_id] = campaign_data
+                    
+        except Exception as e:
+            if show_progress:
+                print(f"⚠️  Warning: Failed to process campaign {campaign_file.name}: {e}")
+            continue
+    
+    if show_progress:
+        print(f"✅ Successfully loaded {successful_campaigns} campaigns")
+        print(f"📈 Total messages across all campaigns: {total_messages:,}")
+        
+        # Memory efficiency report
+        if max_campaigns is not None and max_campaigns < total_available:
+            memory_saved = total_available - campaigns_to_load
+            print(f"💾 Memory optimization: Avoided loading {memory_saved} unnecessary campaigns")
+    
+    if return_json:
+        return campaign_dataframes, json_data
+    else:
+        return campaign_dataframes
+
+
+def _load_campaigns_from_json_file(json_file_path: str, max_campaigns: Optional[int], 
+                                 show_progress: bool, return_json: bool) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
+    """
+    Legacy loading from single large JSON file.
     
     Args:
         json_file_path: Path to JSON file containing multiple campaigns
         max_campaigns: Maximum number of campaigns to load (None for all)
         show_progress: Whether to show progress indicators
+        return_json: If True, return both DataFrames and original JSON data
         
     Returns:
-        Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
+        Campaign DataFrames and optionally JSON data
     """
     import json
+    
+    # Import tqdm for progress bars
     if show_progress:
         try:
             from tqdm import tqdm
@@ -794,7 +984,7 @@ def load_all_campaigns(json_file_path: str, max_campaigns: Optional[int] = None,
         tqdm = None
     
     if show_progress:
-        print(f"Loading campaigns from {json_file_path}...")
+        print(f"📁 Loading campaigns from JSON file: {json_file_path}")
     
     # Load JSON data
     with open(json_file_path, 'r', encoding='utf-8') as f:
@@ -802,18 +992,21 @@ def load_all_campaigns(json_file_path: str, max_campaigns: Optional[int] = None,
     
     total_campaigns = len(all_campaigns_data)
     if show_progress:
-        print(f"Found {total_campaigns} campaigns")
+        print(f"📊 Found {total_campaigns} campaigns")
     
     # Limit campaigns if specified
     campaign_ids = list(all_campaigns_data.keys())
     if max_campaigns is not None:
         campaign_ids = campaign_ids[:max_campaigns]
         if show_progress:
-            print(f"Processing first {len(campaign_ids)} campaigns")
+            print(f"🎯 Processing first {len(campaign_ids)} campaigns")
     
     # Process each campaign
     campaign_dataframes = {}
-    iterator = tqdm(campaign_ids, desc="Processing campaigns") if show_progress else campaign_ids
+    if show_progress and len(campaign_ids) > 1:
+        iterator = tqdm(campaign_ids, desc="Processing campaigns")
+    else:
+        iterator = campaign_ids
     
     for campaign_id in iterator:
         try:
@@ -829,16 +1022,16 @@ def load_all_campaigns(json_file_path: str, max_campaigns: Optional[int] = None,
                 
         except Exception as e:
             if show_progress:
-                print(f"Warning: Failed to process campaign {campaign_id}: {e}")
+                print(f"⚠️  Warning: Failed to process campaign {campaign_id}: {e}")
             continue
     
     if show_progress:
         successful_campaigns = len(campaign_dataframes)
-        print(f"Successfully loaded {successful_campaigns} campaigns")
+        print(f"✅ Successfully loaded {successful_campaigns} campaigns")
         
         # Show basic stats
         total_messages = sum(len(df) for df in campaign_dataframes.values())
-        print(f"Total messages across all campaigns: {total_messages:,}")
+        print(f"📈 Total messages across all campaigns: {total_messages:,}")
     
     if return_json:
         # Return filtered JSON data for successful campaigns only
