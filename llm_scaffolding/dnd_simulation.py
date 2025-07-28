@@ -15,15 +15,17 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 import sys
 from pathlib import Path
+import numpy as np
 import anthropic
 
 # Add analysis directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent / "analysis"))
 
-
+MODEL = "claude-3-haiku-20240307"
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
 # ===================================================================
+
 
 def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
     """
@@ -56,91 +58,104 @@ def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
     df = load_dnd_data(single_campaign_data)
 
     # Extract parameters
-    num_players = df['player'].nunique()
-    character_names = df['character'].unique().tolist()
+    character_names = np.array(df['character'].unique().tolist())
+    character_names = character_names[character_names
+                                      != None]  # Remove empty names
+    num_players = len(character_names)
     total_messages = len(df)
+
+    # Extract personality descriptions using Anthropic API
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # Create prompt for personality extraction
+    prompt = f"""
+    Analyze this D&D play-by-post campaign data and provide a personality description for each character.
+    
+    Campaign data: {json.dumps(campaign_data, indent=2)}
+    
+    Characters found: {list(character_names)}
+    
+    For each character, provide a 2-3 sentence personality description based on their posting style, 
+    interactions, and gameplay approach. Focus on the human player's personality, not the fictional character.
+    
+    Format your response as:
+    Character1: [personality description]
+    Character2: [personality description]
+    etc.
+    """
+
+    response = client.messages.create(model=MODEL,
+                                      max_tokens=1000,
+                                      messages=[{
+                                          "role": "user",
+                                          "content": prompt
+                                      }])
+
+    # Parse the response to extract personalities
+    character_personalities = {}
+    response_text = response.content[0].text
+
+    for line in response_text.split('\n'):
+        if ':' in line:
+            char_name, personality = line.split(':', 1)
+            char_name = char_name.strip()
+            personality = personality.strip()
+            if char_name in character_names:
+                character_personalities[char_name] = personality
+
+    # Extract the initial scenario
+    scenario_text = {}
+    current_char = 'Dungeon Master'
+    i = 1
+
+    while current_char == 'Dungeon Master':
+        text = campaign_data[str(i)]
+        print(text)
+        current_char = text['character']
+        scenario_text[str(i)] = text
+        i += 1
 
     return {
         'num_players': num_players,
+        'total_messages': total_messages,
         'character_names': character_names,
         'campaign_name': campaign_name,
-        'total_messages': total_messages
-    }, df
+        'character_personalities': character_personalities,
+        'initial_scenario': scenario_text
+    }
 
 
 # ===================================================================
 # CHARACTER CREATION
 # ===================================================================
 
-def create_characters(num_players: int, character_data: Optional[Dict] = None) -> List['CharacterAgent']:
+def create_characters(character_data: Dict) -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
     
     Args:
-        num_players: Number of characters to create
-        character_data: Optional extracted character info from human campaign
+        character_data: extracted character info from human campaign
         
     Returns:
         List of CharacterAgent objects
     """
-    # Default character templates
-    default_characters = [
-        {
-            'name': 'Aria',
-            'character_class': 'Fighter',
-            'personality': 'Brave and decisive warrior who leads by example and protects her allies.'
-        },
-        {
-            'name': 'Thorin',
-            'character_class': 'Rogue',
-            'personality': 'Cunning and stealthy scout who prefers shadows and clever solutions.'
-        },
-        {
-            'name': 'Gandalf',
-            'character_class': 'Wizard',
-            'personality': 'Wise and scholarly spellcaster who seeks knowledge and magical solutions.'
-        },
-        {
-            'name': 'Lyra',
-            'character_class': 'Cleric',
-            'personality': 'Compassionate healer who provides spiritual guidance and divine magic.'
-        },
-        {
-            'name': 'Zara',
-            'character_class': 'Ranger',
-            'personality': 'Nature-loving archer who tracks enemies and protects the wilderness.'
-        },
-        {
-            'name': 'Finn',
-            'character_class': 'Bard',
-            'personality': 'Charismatic storyteller who inspires allies and solves problems with wit.'
-        }
-    ]
-
     characters = []
     api_key = os.getenv('ANTHROPIC_API_KEY')
 
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-
+    num_players = character_data['num_players']
     # Create characters based on available templates
     for i in range(num_players):
-        if character_data and i < len(character_data.get('character_names', [])):
-            # Use extracted character data (future extension)
-            char_name = character_data['character_names'][i]
-            char_class = 'Unknown'  # Would extract from campaign data
-            personality = f"A {char_class} adventurer with unique traits."
-        else:
-            # Use default character template
-            template = default_characters[i % len(default_characters)]
-            char_name = template['name']
-            char_class = template['character_class']
-            personality = template['personality']
+        # Use extracted character data
+        char_name = character_data['character_names'][i]
+        char_personality = character_data['character_personalities'][char_name]
 
         character = CharacterAgent(
             name=char_name,
-            character_class=char_class,
-            personality=personality,
+            personality=char_personality,
             api_key=api_key
         )
         characters.append(character)
@@ -183,23 +198,21 @@ class CharacterAgent:
     Individual character agent with LLM-based decision making and memory.
     """
 
-    def __init__(self, name: str, character_class: str, personality: str, api_key: str):
+    def __init__(self, name: str, personality: str, api_key: str):
         """
         Initialize character agent.
         
         Args:
             name: Character name
-            character_class: D&D class (Fighter, Rogue, etc.)
             personality: Character personality description
             api_key: Anthropic API key
         """
         self.name = name
-        self.character_class = character_class
         self.personality = personality
         self.api_key = api_key
 
         # Initialize memory
-        self.memory_summary = f"I am {name}, a {character_class}. {personality} I am playing D&D with my fellow adventurers."
+        self.memory_summary = f"I am {name}, and I am playing D&D with my fellow adventurers. My personality can be described like this: {personality} "
 
         self.client = anthropic.Anthropic(api_key=api_key)
 
@@ -212,7 +225,7 @@ class CharacterAgent:
             older_events_summary: Summary of older events (for future use)
         """
         # Use Claude to update memory
-        prompt = f"""You are {self.name}, a {self.character_class}. Here is your current memory:
+        prompt = f"""You are {self.name}. Here is your current memory:
 
             {self.memory_summary}
 
@@ -225,7 +238,7 @@ class CharacterAgent:
 
         try:
             response = self.client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model=MODEL,
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -247,7 +260,7 @@ class CharacterAgent:
         Returns:
             Character's response/action
         """
-        prompt = f"""You are {self.name}, a {self.character_class}. {self.personality}
+        prompt = f"""You are {self.name}, with a personality described like this: {self.personality}
 
             Your current memory and knowledge:
             {self.memory_summary}
@@ -261,7 +274,7 @@ class CharacterAgent:
 
         try:
             response = self.client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model=MODEL,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}]
             )

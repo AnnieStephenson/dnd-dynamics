@@ -225,7 +225,7 @@ def analyze_time_intervals(df: pd.DataFrame, by_player: bool = False) -> Dict:
                     'median_hours': intervals.median(),
                     'std_hours': intervals.std(),
                     'count': len(intervals),
-                    'intervals_data': intervals[intervals <= 24].values  # For histogram
+                    'intervals_data': intervals.values  # For histogram
                 }
     else:
         # Overall analysis
@@ -238,7 +238,7 @@ def analyze_time_intervals(df: pd.DataFrame, by_player: bool = False) -> Dict:
             'median_hours': intervals.median(),
             'std_hours': intervals.std(),
             'count': len(intervals),
-            'intervals_data': intervals[intervals <= 24].values  # For histogram
+            'intervals_data': intervals.values 
         }
     
     return results
@@ -343,7 +343,7 @@ def analyze_post_lengths(df: pd.DataFrame, by_player: bool = False) -> Dict:
                 'std_words': word_counts.std(),
                 'max_words': word_counts.max(),
                 'count': len(word_counts),
-                'word_counts_data': word_counts[word_counts <= 200].values  # For histogram
+                'word_counts_data': word_counts.values  # For histogram
             }
     else:
         # Overall analysis
@@ -355,7 +355,7 @@ def analyze_post_lengths(df: pd.DataFrame, by_player: bool = False) -> Dict:
             'std_words': word_counts.std(),
             'max_words': word_counts.max(),
             'count': len(word_counts),
-            'word_counts_data': word_counts[word_counts <= 200].values  # For histogram
+            'word_counts_data': word_counts.values  # For histogram
         }
     
     return results
@@ -406,7 +406,7 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
                         'max_words': word_counts.max(),
                         'count': len(word_counts),
                         'total_words': word_counts.sum(),
-                        'word_counts_data': word_counts[word_counts <= 200].values
+                        'word_counts_data': word_counts.values
                     }
         
         # Handle unlabeled content (uses primary_label)
@@ -425,7 +425,7 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
                         'max_words': word_counts.max(),
                         'count': len(word_counts),
                         'total_words': word_counts.sum(),
-                        'word_counts_data': word_counts[word_counts <= 200].values
+                        'word_counts_data': word_counts.values
                     }
     else:
         # Overall analysis for each label type
@@ -441,7 +441,7 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
                     'max_words': word_counts.max(),
                     'count': len(word_counts),
                     'total_words': word_counts.sum(),
-                    'word_counts_data': word_counts[word_counts <= 200].values
+                    'word_counts_data': word_counts.values
                 }
         
         # Handle unlabeled content
@@ -458,7 +458,7 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
                     'max_words': word_counts.max(),
                     'count': len(word_counts),
                     'total_words': word_counts.sum(),
-                    'word_counts_data': word_counts[word_counts <= 200].values
+                    'word_counts_data': word_counts.values
                 }
     
     # Add summary statistics
