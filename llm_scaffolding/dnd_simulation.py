@@ -20,8 +20,9 @@ import anthropic
 
 # Add analysis directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent / "analysis"))
+import dnd_analysis as ana
 
-MODEL = "claude-3-haiku-20240307"
+MODEL = "claude-3-5-sonnet-20240620" #"claude-3-haiku-20240307"
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
 # ===================================================================
@@ -48,19 +49,31 @@ def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
     # Extract campaign name from filename
     campaign_name = Path(campaign_file_path).stem
 
-    # Use existing analysis functions to extract parameters
-    from dnd_analysis import load_dnd_data
-
     # Create single-campaign data structure
     single_campaign_data = {campaign_name: campaign_data}
 
     # Load as DataFrame to analyze
-    df = load_dnd_data(single_campaign_data)
+    df = ana.load_dnd_data(single_campaign_data)
 
     # Extract parameters
+    character_turns = np.array(df['character'].tolist())
     character_names = np.array(df['character'].unique().tolist())
     character_names = character_names[character_names
                                       != None]  # Remove empty names
+    character_classes = []
+    character_races = []
+    character_genders = []
+    player_names = []
+    for char_name in character_names:
+        character_classes.append(
+            list(df[df['character'] == char_name]['class'])[0])
+        character_races.append(
+            list(df[df['character'] == char_name]['race'])[0])
+        character_genders.append(
+            list(df[df['character'] == char_name]['gender'])[0])
+        player_names.append(
+            list(df[df['character'] == char_name]['player'])[0])
+
     num_players = len(character_names)
     total_messages = len(df)
 
@@ -88,52 +101,58 @@ def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
     etc.
     """
 
-    response = client.messages.create(model=MODEL,
-                                      max_tokens=1000,
-                                      messages=[{
-                                          "role": "user",
-                                          "content": prompt
-                                      }])
+    response_char_personality = client.messages.create(model=MODEL,
+                                                       max_tokens=1000,
+                                                       messages=[{
+                                                           "role":
+                                                           "user",
+                                                           "content":
+                                                           prompt
+                                                       }])
 
     # Parse the response to extract personalities
-    character_personalities = {}
-    response_text = response.content[0].text
+    character_personalities = []
+    response_text_char_person = response_char_personality.content[0].text
 
-    for line in response_text.split('\n'):
+    for line in response_text_char_person.split('\n'):
         if ':' in line:
             char_name, personality = line.split(':', 1)
             char_name = char_name.strip()
             personality = personality.strip()
             if char_name in character_names:
-                character_personalities[char_name] = personality
+                character_personalities.append(personality)
 
     # Extract the initial scenario
     scenario_text = {}
     current_char = 'Dungeon Master'
     i = 1
-
     while current_char == 'Dungeon Master':
         text = campaign_data[str(i)]
-        print(text)
-        current_char = text['character']
         scenario_text[str(i)] = text
         i += 1
+        current_char = campaign_data[str(i)]['character']
 
     return {
         'num_players': num_players,
         'total_messages': total_messages,
-        'character_names': character_names,
         'campaign_name': campaign_name,
+        'character_names': character_names,
+        'player_names': player_names,
+        'character_classes': character_classes,
+        'character_races': character_races,
+        'character_genders': character_genders,
         'character_personalities': character_personalities,
+        'character_turns': character_turns,
         'initial_scenario': scenario_text
     }
 
 
-# ===================================================================
+# ===============================================================
 # CHARACTER CREATION
-# ===================================================================
+# ===============================================================
 
-def create_characters(character_data: Dict) -> List['CharacterAgent']:
+
+def create_characters(campaign_params: Dict) -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
     
@@ -146,18 +165,23 @@ def create_characters(character_data: Dict) -> List['CharacterAgent']:
     characters = []
     api_key = os.getenv('ANTHROPIC_API_KEY')
 
-    num_players = character_data['num_players']
+    num_players = campaign_params['num_players']
     # Create characters based on available templates
     for i in range(num_players):
         # Use extracted character data
-        char_name = character_data['character_names'][i]
-        char_personality = character_data['character_personalities'][char_name]
-
-        character = CharacterAgent(
-            name=char_name,
-            personality=char_personality,
-            api_key=api_key
-        )
+        char_name = campaign_params['character_names'][i]
+        char_personality = campaign_params['character_personalities'][i]
+        player_name = campaign_params['player_names'][i]
+        gender = campaign_params['character_genders'][i]
+        race = campaign_params['character_races'][i]
+        dnd_class = campaign_params['character_classes'][i]
+        character = CharacterAgent(name=char_name,
+                                   player_name=player_name,
+                                   gender=gender,
+                                   race=race,
+                                   dnd_class=dnd_class,
+                                   personality=char_personality,
+                                   api_key=api_key)
         characters.append(character)
 
     return characters
@@ -193,12 +217,14 @@ def sample_turn_sequence(character_names: List[str], total_turns: int,
 # CHARACTER AGENT CLASS
 # ===================================================================
 
+
 class CharacterAgent:
     """
     Individual character agent with LLM-based decision making and memory.
     """
 
-    def __init__(self, name: str, personality: str, api_key: str):
+    def __init__(self, name: str, player_name: str, gender: str, race: str,
+                 dnd_class: str, personality: str, api_key: str):
         """
         Initialize character agent.
         
@@ -208,6 +234,11 @@ class CharacterAgent:
             api_key: Anthropic API key
         """
         self.name = name
+        self.player_name = player_name
+        self.gender = gender
+        self.race = race
+        self.dnd_class = dnd_class
+        self.combat_bool = False
         self.personality = personality
         self.api_key = api_key
 
@@ -216,68 +247,35 @@ class CharacterAgent:
 
         self.client = anthropic.Anthropic(api_key=api_key)
 
-    def update_memory(self, recent_verbatim_text: str, older_events_summary: str = ""):
-        """
-        Update character memory with recent events and older summary.
-        
-        Args:
-            recent_verbatim_text: Exact recent character responses and events
-            older_events_summary: Summary of older events (for future use)
-        """
-        # Use Claude to update memory
-        prompt = f"""You are {self.name}. Here is your current memory:
-
-            {self.memory_summary}
-
-            Recent events have occurred:
-            {recent_verbatim_text}
-
-            Please update your memory summary to include these recent events. Keep it concise but capture important details about what happened, who was involved, and any decisions made. Maintain your character's perspective and personality.
-
-            Updated memory summary:"""
-
-        try:
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            self.memory_summary = response.content[0].text.strip()
-
-        except Exception as e:
-            print(f"Warning: Failed to update memory for {self.name}: {e}")
-            # Fallback: simple append
-            self.memory_summary += f"\n\nRecent events: {recent_verbatim_text}"
-
-    def generate_response(self, current_situation: str) -> str:
+    def generate_response(self, game_log: str) -> str:
         """
         Generate character's action/dialogue for current situation.
         
         Args:
-            current_situation: Description of current game state
+            game_log: Game log so far
             
         Returns:
             Character's response/action
         """
-        prompt = f"""You are {self.name}, with a personality described like this: {self.personality}
+        prompt = f"""You are playing Dungeons and Dragons on a play-by-post forum. You are a person playing with username {self.player_name}, 
+            
+            playing a character named: {self.name} with a personality described like this: {self.personality}
 
-            Your current memory and knowledge:
-            {self.memory_summary}
+            The game so far looks like this:
+            {game_log}
 
-            Current situation:
-            {current_situation}
-
-            As {self.name}, what do you do or say in this situation? Respond in character with actions and/or dialogue. Keep it concise but engaging. Include both what you do and what you say if appropriate.
+            -----------------------------
+            It is now your turn to post. As {self.name}, what do you do or say in this situation? Respond in character with actions and/or dialogue. 
 
             Your response:"""
 
         try:
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=300,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            response = self.client.messages.create(model=MODEL,
+                                                   max_tokens=300,
+                                                   messages=[{
+                                                       "role": "user",
+                                                       "content": prompt
+                                                   }])
 
             return response.content[0].text.strip()
 
@@ -289,6 +287,7 @@ class CharacterAgent:
 # ===================================================================
 # GAME SESSION CLASS
 # ===================================================================
+
 
 class GameSession:
     """
@@ -305,50 +304,11 @@ class GameSession:
         """
         self.characters = characters
         self.api_key = api_key
-        self.game_log = []
-        self.current_scene = ""
+        self.game_log = {}
         self.turn_counter = 0
 
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}
-
-    def get_recent_events_for_character(self, character_name: str) -> str:
-        """
-        Get exact character response texts since this character's last turn.
-        
-        Args:
-            character_name: Name of character to get events for
-            
-        Returns:
-            String of recent events since character's last turn
-        """
-        # Find this character's last turn
-        last_turn_index = -1
-        for i, event in enumerate(self.game_log):
-            if event['character'] == character_name:
-                last_turn_index = i
-
-        # Get events since last turn
-        recent_events = []
-        for i in range(last_turn_index + 1, len(self.game_log)):
-            event = self.game_log[i]
-            recent_events.append(f"{event['character']}: {event['action']}")
-
-        return "\n".join(recent_events) if recent_events else "No recent events since your last turn."
-
-    def get_older_events_summary_for_character(self, character_name: str) -> str:
-        """
-        Get summarized character responses from before their last turn.
-        
-        Args:
-            character_name: Name of character
-            
-        Returns:
-            Summary of older events (structured for future use)
-        """
-        # For now, return simple summary
-        # Future extension: Use Claude to summarize older events
-        return f"Earlier events in the adventure involving {character_name} and companions."
 
     def execute_turn(self, character_name: str):
         """
@@ -357,30 +317,18 @@ class GameSession:
         Args:
             character_name: Name of character taking the turn
         """
-        if character_name not in self.character_lookup:
-            print(f"Warning: Character {character_name} not found")
-            return
-
         character = self.character_lookup[character_name]
 
-        # Get recent events for memory update
-        recent_events = self.get_recent_events_for_character(character_name)
-        older_events = self.get_older_events_summary_for_character(character_name)
-
-        # Update character memory
-        if recent_events and recent_events != "No recent events since your last turn.":
-            character.update_memory(recent_events, older_events)
-
         # Generate character response
-        response = character.generate_response(self.current_scene)
+        response = character.generate_response(self.game_log)
 
         # Log the event
-        self.log_event(character_name, response)
+        self.log_event(character, response)
 
         # Print the response
         print(f"\n{character_name}: {response}")
 
-    def log_event(self, character_name: str, action_text: str):
+    def log_event(self, character: CharacterAgent, action_text: str):
         """
         Record turn with timestamp and turn number.
         
@@ -388,16 +336,27 @@ class GameSession:
             character_name: Name of character
             action_text: What the character did/said
         """
-        self.turn_counter += 1
-
         event = {
-            'turn_number': self.turn_counter,
-            'character': character_name,
-            'action': action_text,
-            'timestamp': datetime.now().isoformat()
+            'date': datetime.now().isoformat(),
+            'player': character.player_name,
+            'character': character.name,
+            'in_combat': character.combat_bool,
+            'paragraphs': {
+                '0': {
+                    'text': action_text,
+                    'actions': [],
+                    'label': 'in-character'
+                }
+            },
+            'actions': []
         }
-
-        self.game_log.append(event)
+        if character.name != 'Dungeon Master':
+            event['race'] = character.race
+            event['gender'] = character.gender
+            event['class'] = character.dnd_class
+        print('turn counter: ' + str(self.turn_counter))
+        self.game_log[str(self.turn_counter)] = event
+        self.turn_counter += 1
 
     def run_scenario(self, initial_scenario: str, turn_sequence: List[str]):
         """
@@ -408,10 +367,14 @@ class GameSession:
             turn_sequence: List of character names in turn order
         """
         # Set initial scene
-        self.current_scene = initial_scenario
+        self.game_log.update(initial_scenario)
+        print(f"=== INITIAL GAME LOG ===")
+        print(self.game_log)
 
+        self.turn_counter = int(max(self.game_log.keys(), key=int)) + 1
+        print(self.turn_counter)
         print(f"=== D&D SIMULATION STARTING ===")
-        print(f"Scenario: {initial_scenario}")
+
         print(f"Characters: {[char.name for char in self.characters]}")
         print(f"Total turns: {len(turn_sequence)}")
         print("=" * 50)

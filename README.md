@@ -28,44 +28,8 @@ This toolkit analyzes D&D gameplay logs stored in JSON format to extract meaning
 
 ## 📁 Project Architecture
 
-```
-dnd-dynamics/
-├── dnd_analysis.py                       # Core single-campaign basic metrics
-├── interaction_analysis.py              # Advanced NLP interaction analysis
-├── tutorial.ipynb                       # Single-campaign basic walkthrough
-├── multi_campaign_tutorial.ipynb        # Multi-campaign basic metrics
-├── interaction_comparison_tutorial.ipynb # Multi-campaign interaction comparison
-├── requirements.txt                      # Python dependencies
-├── Game-Data/
-│   └── data-labels.json                 # Input campaign data
-├── campaign_stats_cache/                # Cached analysis results
-│   ├── basic_stats_N_campaigns.pkl     # Basic metrics cache
-│   └── creativity_analysis_N_campaigns.pkl # Interaction cache
-└── Plots/                              # Generated visualizations
-```
-
 ### Core Components
 
-#### 🔧 **Analysis Modules**
-- **`dnd_analysis.py`**: Single-campaign statistical analysis functions
-  - Time interval analysis, player statistics, character mentions, player participation
-  - **Paragraph-level action analysis**: Analyze action types (spells, weapons, dialogue, etc.) and character labels at paragraph level
-  - Functions: `load_dnd_data()`, `analyze_time_intervals()`, `analyze_post_lengths()`, `analyze_paragraph_actions()`, `calculate_player_campaign_participation()`
-  
-- **`interaction_analysis.py`**: Advanced NLP interaction analysis
-  - Semantic embeddings, topic modeling, novelty scoring
-  - Functions: `get_embeddings()`, `semantic_distance()`, `topic_model()`
-
-#### 📓 **Tutorial Notebooks**
-- **`tutorial.ipynb`**: Basic single-campaign analysis with visualizations
-- **`multi_campaign_tutorial.ipynb`**: Compare basic metrics across campaigns
-- **`interaction_comparison_tutorial.ipynb`**: Advanced interaction analysis comparisons
-
-#### 📊 **Data Files**
-- **`Game-Data/data-labels.json`**: Input data in nested JSON format
-- **`campaign_stats_cache/`**: Intelligent caching for fast re-analysis
-
----
 
 ## 🚀 Intelligent Caching System
 
