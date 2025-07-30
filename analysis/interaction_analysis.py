@@ -545,6 +545,7 @@ def _create_sessions_from_dates(df: pd.DataFrame,
     
     return session_ids
 
+
 # Helper plotting functions
 def plot_distance_timeline(df: pd.DataFrame, 
                           distance_col: str = "semantic_distance_w1",
@@ -1646,7 +1647,6 @@ def create_word_scenes(messages, target_words=175):
     
     return scenes
 
-
 # Global cache for BERT models to avoid reloading
 _bert_model_cache = {}
 
@@ -1749,7 +1749,6 @@ def calculate_dsi_bert(text, model_name="bert-base-uncased"):
     
     return float(dsi_score)
 
-
 def analyze_campaign_dsi_over_time(campaign_data):
     """
     Calculate DSI scores for each scene in a campaign over time.
@@ -1829,7 +1828,6 @@ def analyze_campaign_dsi_over_time(campaign_data):
         'scene_count': len(scenes),
         'valid_scores_count': len(valid_scores)
     }
-
 
 def calculate_campaign_average_dsi(campaign_data):
     """
@@ -1913,6 +1911,7 @@ def analyze_dsi_all_campaigns(data_file_path: str = 'data/raw-human-games/data-l
             data_file_path, max_campaigns, cache_dir, force_refresh, show_progress
         )
 
+############ HERE #################
 
 def _analyze_dsi_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
                                      cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:

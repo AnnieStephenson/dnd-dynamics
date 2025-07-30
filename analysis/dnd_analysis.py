@@ -1808,6 +1808,7 @@ def show_cache_status(cache_dir: str = 'campaign_stats_cache') -> None:
 
 
 def calculate_player_campaign_participation(all_results: Dict) -> Dict[str, int]:
+
     """
     Calculate the number of campaigns each player participated in.
     
@@ -1866,3 +1867,4 @@ def calculate_player_campaign_participation(all_results: Dict) -> Dict[str, int]
                            key=lambda x: (-x[1], x[0]))
     
     return dict(sorted_players)
+
