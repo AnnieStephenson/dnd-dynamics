@@ -49,10 +49,6 @@ def setup_api_keys(api_key_file: Optional[str] = None):
         elif line.startswith('GOOGLE_API_KEY='):
             os.environ['GOOGLE_API_KEY'] = line.split('=', 1)[1]
             print("✅ Google API key loaded")
-        elif '=' not in line:
-            # Fallback: assume it's an Anthropic key (backwards compatibility)
-            os.environ['ANTHROPIC_API_KEY'] = line
-            print("✅ API key loaded (assumed Anthropic)")
 
 def get_model_provider(model: str) -> str:
     """

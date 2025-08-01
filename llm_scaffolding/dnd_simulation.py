@@ -24,7 +24,8 @@ from analysis import data_loading as dl
 # CAMPAIGN PARAMETER EXTRACTION
 # ===================================================================
 
-def extract_campaign_parameters(campaign_file_path: str, model: str = "claude-3-5-sonnet-20240620") -> Dict[str, Any]:
+def extract_campaign_parameters(campaign_file_path: str, 
+                                model: str = "claude-3-5-sonnet-20240620") -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
 
@@ -65,7 +66,7 @@ def extract_campaign_parameters(campaign_file_path: str, model: str = "claude-3-
         campaign_data=campaign_data,
         character_names=character_names,
         model=model)
-
+    
     player_personalities = generate_player_personalities(
         campaign_data=campaign_data,
         player_names=player_names,
@@ -119,7 +120,7 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
         - Role in the group or story
         - Any quirks, values, or unique traits
 
-        If the character is well-developed, your response may be 10+ sentences. 
+        If the character is well-developed, your response may be 200 words or more. 
 
         Campaign data:
         {json.dumps(campaign_data, indent=2)}
@@ -131,7 +132,6 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
 
         [Character Name]:[Detailed fictional character personality and backstory]
 
-        For the Dungeon Master, who is not technically a character, 
         """
 
     response = litellm.completion(
@@ -448,7 +448,7 @@ class CharacterAgent:
         # Initialize memory
         self.memory_summary = f"I am {name}, and I am playing D&D with my fellow adventurers. My personality can be described like this: {personality} "
 
-    def generate_response(self, game_log: str) -> str:
+    def generate_response(self, game_log: str, include_player_personalities) -> str:
         """
         Generate character's action/dialogue for current situation.
         
@@ -458,10 +458,16 @@ class CharacterAgent:
         Returns:
             Character's response/action
         """
+        player_section = f"""PLAYER IDENTITY:
+            - Username: {self.player_name}
+            - Player Personality: {self.player_personality}
+            """ if include_player_personalities else ""
+
+        player_style_text = f", while also staying to the play style representative of {self.player_name}" if include_player_personalities else ""
+
         prompt = f"""You are roleplaying in a Dungeons & Dragons play-by-post forum game.
 
-        PLAYER IDENTITY:
-        - Username: {self.player_name}
+        {player_section}
 
         CHARACTER IDENTITY:
         - Character Name: {self.name}
@@ -475,7 +481,7 @@ class CharacterAgent:
         You are {self.player_name} playing as {self.name}. Respond in character with what {self.name} does or says in this situation.
 
         Your response should:
-        - Stay true to {self.name}'s personality and abilities, while also staying to the play style representative of {self.player_name}
+        - Stay true to {self.name}'s personality and abilities{player_style_text}
         - Be appropriate for the current situation
         - Include both actions and/or dialogue as needed
         - Match the posting style typical of play-by-post D&D forums
@@ -523,7 +529,7 @@ class GameSession:
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}
 
-    def execute_turn(self, character_name: str):
+    def execute_turn(self, character_name: str, include_player_personalities=True):
         """
         Execute a turn for the specified character.
         
@@ -533,7 +539,7 @@ class GameSession:
         character = self.character_lookup[character_name]
 
         # Generate character response
-        response = character.generate_response(self.game_log)
+        response = character.generate_response(self.game_log, include_player_personalities=include_player_personalities)
 
         # Log the event
         self.log_event(character, response)
@@ -572,7 +578,7 @@ class GameSession:
         self.game_log[str(self.turn_counter)] = event
         self.turn_counter += 1
 
-    def run_scenario(self, initial_scenario: str, turn_sequence: List[str]):
+    def run_scenario(self, initial_scenario: str, turn_sequence: List[str], include_player_personalities=True):
         """
         Main game loop that iterates through the turn sequence.
         
@@ -595,7 +601,7 @@ class GameSession:
 
         # Execute turns
         for character_name in turn_sequence:
-            self.execute_turn(character_name)
+            self.execute_turn(character_name, include_player_personalities=include_player_personalities)
 
         print("\n" + "=" * 50)
         print("=== SIMULATION COMPLETE ===")
