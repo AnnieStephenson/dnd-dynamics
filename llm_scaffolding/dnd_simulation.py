@@ -16,22 +16,18 @@ from typing import Dict, List, Optional, Any
 import sys
 from pathlib import Path
 import numpy as np
-import anthropic
+import litellm
 
-# Add analysis directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent / "analysis"))
-import dnd_analysis as ana
-
-MODEL = "claude-3-5-sonnet-20240620" #"claude-3-haiku-20240307"
+from .api_config import validate_api_key_for_model
+from analysis import data_loading as dl
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
 # ===================================================================
 
-
-def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
+def extract_campaign_parameters(campaign_file_path: str, model: str = "claude-3-5-sonnet-20240620") -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
-    
+
     Args:
         campaign_file_path: Path to individual campaign JSON file
         
@@ -42,93 +38,50 @@ def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
         - campaign_name: Name of the campaign
         - total_messages: Total number of messages in campaign
     """
-    # Load campaign data
+    # Load and label data
     with open(campaign_file_path, 'r', encoding='utf-8') as f:
         campaign_data = json.load(f)
-
-    # Extract campaign name from filename
     campaign_name = Path(campaign_file_path).stem
-
-    # Create single-campaign data structure
     single_campaign_data = {campaign_name: campaign_data}
+    df = dl.load_dnd_data(single_campaign_data)
 
-    # Load as DataFrame to analyze
-    df = ana.load_dnd_data(single_campaign_data)
-
-    # Extract parameters
+    # Extract metadata
     character_turns = np.array(df['character'].tolist())
+    character_turns = character_turns[character_turns != None]
     character_names = np.array(df['character'].unique().tolist())
-    character_names = character_names[character_names
-                                      != None]  # Remove empty names
-    character_classes = []
-    character_races = []
-    character_genders = []
-    player_names = []
-    for char_name in character_names:
-        character_classes.append(
-            list(df[df['character'] == char_name]['class'])[0])
-        character_races.append(
-            list(df[df['character'] == char_name]['race'])[0])
-        character_genders.append(
-            list(df[df['character'] == char_name]['gender'])[0])
-        player_names.append(
-            list(df[df['character'] == char_name]['player'])[0])
+    character_names = character_names[character_names != None]
+
+    character_classes = [list(df[df['character'] == name]['class'])[0] for name in character_names]
+    character_races = [list(df[df['character'] == name]['race'])[0] for name in character_names]
+    character_genders = [list(df[df['character'] == name]['gender'])[0] for name in character_names]
+    player_names = [list(df[df['character'] == name]['player'])[0] for name in character_names]
 
     num_players = len(character_names)
     total_messages = len(df)
 
-    # Extract personality descriptions using Anthropic API
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+    validate_api_key_for_model(model)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    character_personalities = generate_character_personalities(
+        campaign_data=campaign_data,
+        character_names=character_names,
+        model=model)
 
-    # Create prompt for personality extraction
-    prompt = f"""
-    Analyze this D&D play-by-post campaign data and provide a personality description for each character.
+    player_personalities = generate_player_personalities(
+        campaign_data=campaign_data,
+        player_names=player_names,
+        model=model)
     
-    Campaign data: {json.dumps(campaign_data, indent=2)}
-    
-    Characters found: {list(character_names)}
-    
-    For each character, provide a 2-3 sentence personality description based on their posting style, 
-    interactions, and gameplay approach. Focus on the human player's personality, not the fictional character.
-    
-    Format your response as:
-    Character1: [personality description]
-    Character2: [personality description]
-    etc.
-    """
+    character_sheets = generate_character_sheets(
+        campaign_data=campaign_data,
+        character_names=character_names,
+        model=model) 
 
-    response_char_personality = client.messages.create(model=MODEL,
-                                                       max_tokens=1000,
-                                                       messages=[{
-                                                           "role":
-                                                           "user",
-                                                           "content":
-                                                           prompt
-                                                       }])
-
-    # Parse the response to extract personalities
-    character_personalities = []
-    response_text_char_person = response_char_personality.content[0].text
-
-    for line in response_text_char_person.split('\n'):
-        if ':' in line:
-            char_name, personality = line.split(':', 1)
-            char_name = char_name.strip()
-            personality = personality.strip()
-            if char_name in character_names:
-                character_personalities.append(personality)
-
-    # Extract the initial scenario
+    # Extract the initial scenario from the Dungeon Master
     scenario_text = {}
     current_char = 'Dungeon Master'
     i = 1
     while current_char == 'Dungeon Master':
-        text = campaign_data[str(i)]
-        scenario_text[str(i)] = text
+        scenario_text[str(i)] = campaign_data[str(i)]
         i += 1
         current_char = campaign_data[str(i)]['character']
 
@@ -142,17 +95,258 @@ def extract_campaign_parameters(campaign_file_path: str) -> Dict[str, Any]:
         'character_races': character_races,
         'character_genders': character_genders,
         'character_personalities': character_personalities,
+        'player_personalities': player_personalities,
+        'character_sheets': character_sheets, 
         'character_turns': character_turns,
         'initial_scenario': scenario_text
     }
 
+def generate_character_personalities(campaign_data: Dict[str, Any],
+                                     character_names: List[str],
+                                     model: str) -> List[str]:
+    """
+    Query LLM to extract fictional character personalities and backstories.
+    """
+
+    prompt = f"""
+        You are analyzing a Dungeons & Dragons play-by-post campaign.
+
+        Your task is to generate a rich, detailed personality and backstory summary for each character, based on how they are portrayed by the human player — especially in early posts, dialogue, and actions.
+
+        Use all available information to describe:
+        - Their personality traits (e.g., brave, secretive, idealistic)
+        - Backstory elements (e.g., origin, motivations, relationships)
+        - Role in the group or story
+        - Any quirks, values, or unique traits
+
+        If the character is well-developed, your response may be 10+ sentences. 
+
+        Campaign data:
+        {json.dumps(campaign_data, indent=2)}
+
+        Characters found:
+        {np.array(character_names[character_names!='Dungeon Master'])}
+
+        For each character, format your response like this on a single line:
+
+        [Character Name]:[Detailed fictional character personality and backstory]
+
+        For the Dungeon Master, who is not technically a character, 
+        """
+
+    response = litellm.completion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
+    )
+
+    response_text = response.choices[0].message.content
+    lines = [line.strip() for line in response_text.strip().split('\n') if ':' in line]
+    valid_lines = [line.strip() for line in lines if any(line.strip().startswith(name + ":") for name in character_names)]
+    personalities = []
+
+    line_idx = 0
+    for name in character_names:
+        if name == "Dungeon Master":
+            personalities.append(None)
+        else:
+            name_in_line, desc = valid_lines[line_idx].split(':', 1)
+            personalities.append(desc.strip())
+            line_idx += 1
+
+    return personalities
+
+def generate_player_personalities(campaign_data: Dict[str, Any],
+                                     player_names: List[str],
+                                     model: str) -> List[str]:
+    """
+    Query LLM to extract fictional character personalities and backstories.
+    """
+
+    prompt = f"""
+        You are analyzing the behavior and writing of players in a Dungeons & Dragons play-by-post campaign.
+
+        For each player, generate a detailed psychological profile, inferred from their writing style, gameplay decisions, social behavior, and tone of voice throughout the game.
+        For this description, we are not interested in traits of the character being played, but in the human player who is roleplaying that character. 
+        Be sure to separate the human player's personality from that of their character. 
+
+        You may include:
+        - Personality traits (e.g., introverted, playful, meticulous)
+        - Writing style (e.g., descriptive, terse, humorous, lyrical)
+        - Possible age range, gender identity (if suggested), or background
+        - Hobbies, interests, or career hints
+        - Political or ethical leanings (if evidenced)
+        - Social tendencies (e.g., leadership, collaboration, conflict-avoidance)
+        - Possible family or personal life details
+        - Any other relevant psychological insights
+
+        Only include details that are **reasonably supported** by the gameplay data — be thoughtful and cautious, but specific.
+
+        Campaign data:
+        {json.dumps(campaign_data, indent=2)}
+
+        Characters found:
+        {np.array(player_names)}
+
+        For each player, format your response like this on a single line:
+
+        [Player Name]:[Detailed player personality and profile]
+
+        """
+
+    response = litellm.completion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
+    )
+
+    response_text = response.choices[0].message.content
+    lines = [line.strip() for line in response_text.strip().split('\n') if ':' in line]
+    valid_lines = [line.strip() for line in lines if any(line.strip().startswith(name + ":") for name in player_names)]
+    player_personalities = []
+
+    line_idx = 0
+    for name in player_names:
+        name_in_line, desc = valid_lines[line_idx].split(':', 1)
+        player_personalities.append(desc.strip())
+        line_idx += 1
+
+    return player_personalities
+
+def generate_character_sheets(campaign_data: Dict[str, Any],
+                             character_names: List[str],
+                             model: str) -> Dict[str, Dict]:
+    """
+    Query LLM to extract and infer complete D&D character sheets from campaign text.
+    
+    Args:
+        campaign_data: Campaign message data
+        character_names: List of character names
+        model: LLM model to use
+        
+    Returns:
+        Dictionary mapping character names to their character sheet dictionaries
+    """
+    
+    prompt = f"""
+        You are analyzing a Dungeons & Dragons play-by-post campaign to extract character sheet information.
+
+        Your task is to create complete D&D character sheets for each character based on:
+        1. Explicit stats mentioned in early posts (levels, abilities, etc.)
+        2. Equipment and spells mentioned throughout the campaign
+        3. Actions taken that reveal class abilities or proficiencies
+        4. Combat descriptions that show hit points, armor class, etc.
+        5. Any other character sheet details that can be reasonably inferred
+
+        For stats not explicitly mentioned, make reasonable inferences based on:
+        - Character class and typical stat distributions
+        - Actions they take successfully/unsuccessfully
+        - Spells they cast or abilities they use
+        - Equipment they wield effectively
+
+        Campaign data:
+        {json.dumps(campaign_data, indent=2)}
+
+        Characters to analyze:
+        {np.array(character_names[character_names != 'Dungeon Master'])}
+
+        IMPORTANT: Use ability scores and level from the initial game state, not from later progression during the campaign.
+
+        For some campaigns, the character sheet may include additional parameters containing qualitative questions and answers from the DM, such as "why are you here?" or "character background". If these aspects are provided, include them in your response.
+
+        For each character, provide a complete character sheet in this exact format:
+
+        [Character Name]:
+        Level: [number]
+        Class: [class name]
+        Race: [race name]
+        Background: [background if mentioned or inferred]
+        Alignment: [alignment if mentioned or inferred]
+        Strength: [score]
+        Dexterity: [score]  
+        Constitution: [score]
+        Intelligence: [score]
+        Wisdom: [score]
+        Charisma: [score]
+        Hit Points: [current/max if known]
+        Armor Class: [number]
+        Proficiency Bonus: [+number]
+        Saving Throw Proficiencies: [list]
+        Skill Proficiencies: [list]
+        Languages: [list]
+        Equipment: [weapons, armor, tools, etc.]
+        Spells Known: [list of spells if applicable]
+        Special Abilities: [class features, racial traits, etc.]
+        Notes: [any other relevant character details]
+
+        If a field cannot be determined even with reasonable inference, write "Unknown".
+        Base ability scores on typical arrays (15,14,13,12,10,8) adjusted for race and class.
+        """
+
+    response = litellm.completion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=3000
+    )
+
+    response_text = response.choices[0].message.content
+    character_sheets = [None] # start with DM character sheet of none
+    
+    # Parse response into character sheets
+    current_character = None
+    current_sheet = {}
+    
+    for line in response_text.strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check if this line starts a new character
+        if any(line.startswith(name + ":") for name in character_names if name != "Dungeon Master"):
+            # Save previous character if exists
+            if current_character and current_sheet:
+                character_sheets.append(current_sheet.copy())
+            
+            # Start new character
+            current_character = line.split(':', 1)[0].strip()
+            current_sheet = {}
+            continue
+        
+        # Parse character sheet fields
+        if ':' in line and current_character:
+            field_name, field_value = line.split(':', 1)
+            field_name = field_name.strip()
+            field_value = field_value.strip()
+            
+            # Convert certain fields to appropriate types
+            if field_name in ['Level', 'Strength', 'Dexterity', 'Constitution', 
+                             'Intelligence', 'Wisdom', 'Charisma', 'Armor Class']:
+                try:
+                    if field_value.lower() != 'unknown':
+                        field_value = int(field_value)
+                except ValueError:
+                    pass  # Keep as string if conversion fails
+            
+            elif field_name in ['Saving Throw Proficiencies', 'Skill Proficiencies', 
+                               'Languages', 'Equipment', 'Spells Known', 'Special Abilities']:
+                # Convert comma-separated lists
+                if field_value.lower() != 'unknown':
+                    field_value = [item.strip() for item in field_value.split(',') if item.strip()]
+            
+            current_sheet[field_name] = field_value
+    
+    # Don't forget the last character
+    if current_character and current_sheet:
+        character_sheets.append(current_sheet.copy())
+    
+    return character_sheets
 
 # ===============================================================
 # CHARACTER CREATION
 # ===============================================================
 
 
-def create_characters(campaign_params: Dict) -> List['CharacterAgent']:
+def create_characters(campaign_params: Dict, model: str = "claude-3-5-sonnet-20240620") -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
     
@@ -163,7 +357,6 @@ def create_characters(campaign_params: Dict) -> List['CharacterAgent']:
         List of CharacterAgent objects
     """
     characters = []
-    api_key = os.getenv('ANTHROPIC_API_KEY')
 
     num_players = campaign_params['num_players']
     # Create characters based on available templates
@@ -171,6 +364,8 @@ def create_characters(campaign_params: Dict) -> List['CharacterAgent']:
         # Use extracted character data
         char_name = campaign_params['character_names'][i]
         char_personality = campaign_params['character_personalities'][i]
+        player_personality = campaign_params['player_personalities'][i]
+        character_sheet = campaign_params['character_sheets'][i]
         player_name = campaign_params['player_names'][i]
         gender = campaign_params['character_genders'][i]
         race = campaign_params['character_races'][i]
@@ -181,7 +376,9 @@ def create_characters(campaign_params: Dict) -> List['CharacterAgent']:
                                    race=race,
                                    dnd_class=dnd_class,
                                    personality=char_personality,
-                                   api_key=api_key)
+                                   player_personality=player_personality,
+                                   character_sheet = character_sheet,
+                                   model=model)
         characters.append(character)
 
     return characters
@@ -224,14 +421,15 @@ class CharacterAgent:
     """
 
     def __init__(self, name: str, player_name: str, gender: str, race: str,
-                 dnd_class: str, personality: str, api_key: str):
+                 dnd_class: str, personality: str, player_personality: str,
+                 character_sheet: Dict, model: str = "claude-3-5-sonnet-20240620"):
         """
         Initialize character agent.
         
         Args:
             name: Character name
             personality: Character personality description
-            api_key: Anthropic API key
+            model: LLM model to use
         """
         self.name = name
         self.player_name = player_name
@@ -240,12 +438,15 @@ class CharacterAgent:
         self.dnd_class = dnd_class
         self.combat_bool = False
         self.personality = personality
-        self.api_key = api_key
+        self.player_personality = player_personality,
+        self.character_sheet = character_sheet,
+        self.model = model
+        
+        # Validate API key is available for this model
+        validate_api_key_for_model(model)
 
         # Initialize memory
         self.memory_summary = f"I am {name}, and I am playing D&D with my fellow adventurers. My personality can be described like this: {personality} "
-
-        self.client = anthropic.Anthropic(api_key=api_key)
 
     def generate_response(self, game_log: str) -> str:
         """
@@ -257,27 +458,41 @@ class CharacterAgent:
         Returns:
             Character's response/action
         """
-        prompt = f"""You are playing Dungeons and Dragons on a play-by-post forum. You are a person playing with username {self.player_name}, 
-            
-            playing a character named: {self.name} with a personality described like this: {self.personality}
+        prompt = f"""You are roleplaying in a Dungeons & Dragons play-by-post forum game.
 
-            The game so far looks like this:
-            {game_log}
+        PLAYER IDENTITY:
+        - Username: {self.player_name}
 
-            -----------------------------
-            It is now your turn to post. As {self.name}, what do you do or say in this situation? Respond in character with actions and/or dialogue. 
+        CHARACTER IDENTITY:
+        - Character Name: {self.name}
+        - Character Personality: {self.personality}
+        - Character Sheet: {self.character_sheet}
 
-            Your response:"""
+        CURRENT GAME STATE:
+        {game_log}
+
+        INSTRUCTIONS:
+        You are {self.player_name} playing as {self.name}. Respond in character with what {self.name} does or says in this situation.
+
+        Your response should:
+        - Stay true to {self.name}'s personality and abilities, while also staying to the play style representative of {self.player_name}
+        - Be appropriate for the current situation
+        - Include both actions and/or dialogue as needed
+        - Match the posting style typical of play-by-post D&D forums
+
+        {self.name}'s response:"""
 
         try:
-            response = self.client.messages.create(model=MODEL,
-                                                   max_tokens=300,
-                                                   messages=[{
-                                                       "role": "user",
-                                                       "content": prompt
-                                                   }])
+            response = litellm.completion(
+                model=self.model,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }],
+                max_tokens=300
+            )
 
-            return response.content[0].text.strip()
+            return response.choices[0].message.content.strip()
 
         except Exception as e:
             print(f"Warning: Failed to generate response for {self.name}: {e}")
@@ -294,16 +509,14 @@ class GameSession:
     Main game session manager that orchestrates the D&D simulation.
     """
 
-    def __init__(self, characters: List[CharacterAgent], api_key: str):
+    def __init__(self, characters: List[CharacterAgent]):
         """
         Initialize game session.
         
         Args:
             characters: List of CharacterAgent objects
-            api_key: Anthropic API key
         """
         self.characters = characters
-        self.api_key = api_key
         self.game_log = {}
         self.turn_counter = 0
 
@@ -355,6 +568,7 @@ class GameSession:
             event['gender'] = character.gender
             event['class'] = character.dnd_class
         print('turn counter: ' + str(self.turn_counter))
+        print('\n')
         self.game_log[str(self.turn_counter)] = event
         self.turn_counter += 1
 

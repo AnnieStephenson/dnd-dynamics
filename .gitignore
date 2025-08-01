@@ -192,6 +192,7 @@ tutorials/plots/
 
 # Claude Code documentation
 CLAUDE.md
+context/
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to

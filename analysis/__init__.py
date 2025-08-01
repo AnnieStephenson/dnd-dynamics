@@ -18,5 +18,4 @@ Usage:
     import analysis.plot_utils as plots
 """
 
-__version__ = "2.0.0"
-__author__ = "Claude Code Assistant"
+__version__ = "0.0.0"
