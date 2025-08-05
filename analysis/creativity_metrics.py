@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
+from tqdm import tqdm
 from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.preprocessing import MinMaxScaler
 
@@ -941,3 +942,112 @@ def _analyze_single_campaign_dsi(campaign_data: dict, campaign_id: str, show_pro
     }
 
     return dsi_analysis
+
+# ===================================================================
+# Multi-metric ANALYSIS 
+# ===================================================================
+
+def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dict, show_progress: bool) -> Dict:
+    """
+    Run all creativity analysis functions for a single campaign.
+    
+    Args:
+        df: Loaded campaign DataFrame
+        campaign_id: Campaign identifier
+        campaign_data: Raw campaign data
+        show_progress: Whether to show progress indicators
+        
+    Returns:
+        Dict with creativity analysis results
+    """
+    campaign_results = {}
+    
+    # Get embeddings for all text
+    embeddings = get_embeddings(df)
+    campaign_results['embeddings'] = embeddings
+    
+    # Calculate semantic distances
+    semantic_distances = semantic_distance(df, embeddings=embeddings)
+    campaign_results['semantic_distances'] = semantic_distances
+    
+    # Analyze session novelty
+    novelty_results = session_novelty(df, embeddings=embeddings)
+    campaign_results['session_novelty'] = novelty_results
+    
+    # Topic modeling
+    topics_series, topic_model_obj = topic_model(df, embeddings=embeddings)
+    campaign_results['topic_model'] = {
+        'topics': topics_series,
+        'model': topic_model_obj
+    }
+    
+    # Add topics to DataFrame for transition analysis
+    df_with_topics = df.copy()
+    df_with_topics['topic'] = topics_series
+    
+    # Topic transitions
+    topic_transitions = topic_transition_matrix(df_with_topics, topic_col='topic')
+    campaign_results['topic_transitions'] = topic_transitions
+    
+    # Topic change rate
+    change_rate = topic_change_rate(df_with_topics, topic_col='topic')
+    campaign_results['topic_change_rate'] = {'overall_rate': change_rate.mean(), 'series': change_rate}
+    
+    # Store campaign metadata
+    campaign_results['metadata'] = {
+        'campaign_id': campaign_id,
+        'total_messages': len(df),
+        'unique_players': df['player'].nunique(),
+        'date_range': {
+            'start': df['date'].min().isoformat() if not df['date'].isna().all() else None,
+            'end': df['date'].max().isoformat() if not df['date'].isna().all() else None
+        }
+    }
+    
+    return campaign_results
+
+
+def analyze_creativity(
+    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    show_progress: bool = True,
+    **kwargs
+) -> Union[Dict, Dict[str, Dict]]:
+    """
+    Analyze creativity metrics for single or multiple campaigns.
+    
+    Args:
+        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        show_progress: Whether to show progress for multi-campaign analysis
+        **kwargs: Additional arguments passed to single-campaign analysis
+        
+    Returns:
+        Dict of results for single campaign, or Dict[campaign_id, results] for multiple
+    """
+    if isinstance(data, pd.DataFrame):
+        # Single campaign analysis
+        campaign_id = kwargs.get('campaign_id', 'single_campaign')
+        campaign_data = kwargs.get('campaign_data', {})
+        return _analyze_single_campaign_creativity(
+            data, campaign_id, campaign_data, show_progress=False
+        )
+    
+    elif isinstance(data, dict):
+        # Multiple campaign analysis
+        results = {}
+        
+        # Prepare iterator with progress bar if requested
+        if show_progress and len(data) > 1:
+            iterator = tqdm(data.items(), desc="Analyzing campaigns", total=len(data))
+        else:
+            iterator = data.items()
+        
+        for campaign_id, df in iterator:
+            campaign_data = kwargs.get('campaign_data', {}).get(campaign_id, {})
+            results[campaign_id] = _analyze_single_campaign_creativity(
+                df, campaign_id, campaign_data, show_progress=False
+            )
+        
+        return results
+    
+    else:
+        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")

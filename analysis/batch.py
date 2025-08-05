@@ -23,110 +23,6 @@ from . import creativity_metrics as creativity
 
 
 # ===================================================================
-# MULTI-METRIC analysis for single campaign
-# ===================================================================
-
-
-def _analyze_creativity_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
-                                           cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
-    """Memory-efficient creativity analysis using individual campaign files."""
-    
-    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
-    campaigns_to_analyze = min(max_campaigns, len(campaign_files)) if max_campaigns is not None else len(campaign_files)
-    
-    # Cache handling
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = Path(cache_dir) / f'creativity_analysis_{campaigns_to_analyze}_campaigns.pkl'
-    
-    if not force_refresh and cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    
-    # Process campaigns
-    files_to_process = campaign_files[:campaigns_to_analyze]
-    iterator = tqdm(files_to_process, desc="Analyzing campaigns") if show_progress else files_to_process
-    all_results = {}
-    
-    for campaign_file in iterator:
-        campaign_id = campaign_file.stem
-        
-        with open(campaign_file, 'r', encoding='utf-8') as f:
-            campaign_data = json.load(f)
-        
-        single_campaign_data = {campaign_id: campaign_data}
-        df = dl._load_dnd_data(single_campaign_data)
-        
-        campaign_results = _analyze_single_campaign_creativity(df, campaign_id, campaign_data, show_progress)
-        all_results[campaign_id] = campaign_results
-    
-    # Cache results
-    with open(cache_file, 'wb') as f:
-        pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
-    return all_results
-
-
-def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dict, show_progress: bool) -> Dict:
-    """
-    Run all creativity analysis functions for a single campaign.
-    
-    Args:
-        df: Loaded campaign DataFrame
-        campaign_id: Campaign identifier
-        campaign_data: Raw campaign data
-        show_progress: Whether to show progress indicators
-        
-    Returns:
-        Dict with creativity analysis results
-    """
-    campaign_results = {}
-    
-    # Get embeddings for all text
-    embeddings = creativity.get_embeddings(df)
-    campaign_results['embeddings'] = embeddings
-    
-    # Calculate semantic distances
-    semantic_distances = creativity.semantic_distance(df, embeddings=embeddings)
-    campaign_results['semantic_distances'] = semantic_distances
-    
-    # Analyze session novelty
-    novelty_results = creativity.session_novelty(df, embeddings=embeddings)
-    campaign_results['session_novelty'] = novelty_results
-    
-    # Topic modeling
-    topics_series, topic_model_obj = creativity.topic_model(df, embeddings=embeddings)
-    campaign_results['topic_model'] = {
-        'topics': topics_series,
-        'model': topic_model_obj
-    }
-    
-    # Add topics to DataFrame for transition analysis
-    df_with_topics = df.copy()
-    df_with_topics['topic'] = topics_series
-    
-    # Topic transitions
-    topic_transitions = creativity.topic_transition_matrix(df_with_topics, topic_col='topic')
-    campaign_results['topic_transitions'] = topic_transitions
-    
-    # Topic change rate
-    change_rate = creativity.topic_change_rate(df_with_topics, topic_col='topic')
-    campaign_results['topic_change_rate'] = {'overall_rate': change_rate.mean(), 'series': change_rate}
-    
-    # Store campaign metadata
-    campaign_results['metadata'] = {
-        'campaign_id': campaign_id,
-        'total_messages': len(df),
-        'unique_players': df['player'].nunique(),
-        'date_range': {
-            'start': df['date'].min().isoformat() if not df['date'].isna().all() else None,
-            'end': df['date'].max().isoformat() if not df['date'].isna().all() else None
-        }
-    }
-    
-    return campaign_results
-
-
-# ===================================================================
 # MULTI-CAMPAIGN analysis
 # ===================================================================
 
@@ -181,50 +77,6 @@ def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame],
     results['summary_stats'] = generate_multi_campaign_summary(campaign_dataframes, results['per_campaign'])
     
     return results
-
-def analyze_creativity_all_campaigns(data_file_path: Optional[str] = None,
-                                   max_campaigns: Optional[int] = None,
-                                   cache_dir: Optional[str] = None,
-                                   force_refresh: bool = False,
-                                   show_progress: bool = True) -> Dict:
-    """
-    Apply all existing creative metric functions across multiple campaigns.
-    
-    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
-    
-    Parameters
-    ----------
-    data_file_path : str, optional
-        Path to campaigns directory or legacy JSON file (auto-detects)
-        If None, defaults to 'data/raw-human-games/individual_campaigns' relative to repo root
-    max_campaigns : int, optional
-        Maximum number of campaigns to analyze (None for all)
-    cache_dir : str, optional
-        Directory to store cached results. If None, defaults to 'data/processed/creativity_cache' relative to repo root
-    force_refresh : bool
-        Whether to force recalculation even if cache exists
-    show_progress : bool
-        Whether to show progress bars
-        
-    Returns
-    -------
-    Dict
-        Results from all creative metrics functions for each campaign
-    """
-    # Set default paths relative to the repository root
-    repo_root = Path(__file__).parent.parent
-    if data_file_path is None:
-        data_file_path = str(repo_root / 'data' / 'raw-human-games' / 'individual_campaigns')
-    if cache_dir is None:
-        cache_dir = str(repo_root / 'data' / 'processed' / 'creativity_cache')
-    
-    # Create cache directory
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    # Use individual campaign files directly
-    return _analyze_creativity_from_individual_files(
-        Path(data_file_path), max_campaigns, cache_dir, force_refresh, show_progress
-    )
 
 def analyze_dsi_all_campaigns(data_file_path: Optional[str] = None,
                             max_campaigns: Optional[int] = None,
@@ -348,7 +200,7 @@ def aggregate_creativity_metrics(all_creativity_results: Dict) -> Dict:
     Parameters
     ----------
     all_creativity_results : Dict
-        Output from analyze_creativity_all_campaigns()
+        Output from analyze_creativity()
         
     Returns
     -------
@@ -801,7 +653,7 @@ def save_creativity_results(creativity_results: Dict, num_campaigns: int, cache_
     Parameters
     ----------
     creativity_results : Dict
-        Results from analyze_creativity_all_campaigns()
+        Results from analyze_creativity()
     num_campaigns : int
         Number of campaigns analyzed
     cache_dir : str, optional
@@ -1051,13 +903,13 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
         Results from all creative metrics functions for each campaign
     """
     if force_refresh:
-        return analyze_creativity_all_campaigns(
-            data_file_path=data_file_path,
+        # Load campaigns and analyze creativity
+        campaign_dataframes = dl.load_campaigns(
+            source=data_file_path,
             max_campaigns=max_campaigns,
-            cache_dir=cache_dir,
-            force_refresh=True,
             show_progress=show_progress
         )
+        return creativity.analyze_creativity(campaign_dataframes, show_progress=show_progress)
     
     # Check for exact match first
     exact_cache = load_creativity_results(max_campaigns, cache_dir)
@@ -1074,13 +926,13 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
         # No cache files found, compute from scratch
         if show_progress:
             print("No creativity cache files found, computing from scratch")
-        return analyze_creativity_all_campaigns(
-            data_file_path=data_file_path,
+        # Load campaigns and analyze creativity
+        campaign_dataframes = dl.load_campaigns(
+            source=data_file_path,
             max_campaigns=max_campaigns,
-            cache_dir=cache_dir,
-            force_refresh=False,
             show_progress=show_progress
         )
+        return creativity.analyze_creativity(campaign_dataframes, show_progress=show_progress)
     
     # Find the largest cache file that's <= max_campaigns
     cached_counts = []
@@ -1099,13 +951,13 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
         # No suitable cache found, compute from scratch
         if show_progress:
             print("No suitable creativity cache found, computing from scratch")
-        return analyze_creativity_all_campaigns(
-            data_file_path=data_file_path,
+        # Load campaigns and analyze creativity
+        campaign_dataframes = dl.load_campaigns(
+            source=data_file_path,
             max_campaigns=max_campaigns,
-            cache_dir=cache_dir,
-            force_refresh=False,
             show_progress=show_progress
         )
+        return creativity.analyze_creativity(campaign_dataframes, show_progress=show_progress)
     
     # Get the largest suitable cache
     cached_counts.sort(reverse=True)
@@ -1137,13 +989,13 @@ def load_or_compute_creativity_incremental(max_campaigns: int,
         # Cache load failed, compute from scratch
         if show_progress:
             print("Failed to load creativity cache, computing from scratch")
-        return analyze_creativity_all_campaigns(
-            data_file_path=data_file_path,
+        # Load campaigns and analyze creativity
+        campaign_dataframes = dl.load_campaigns(
+            source=data_file_path,
             max_campaigns=max_campaigns,
-            cache_dir=cache_dir,
-            force_refresh=False,
             show_progress=show_progress
         )
+        return creativity.analyze_creativity(campaign_dataframes, show_progress=show_progress)
     
     # Load full data to get campaign ordering
     with open(data_file_path, 'r') as f:
