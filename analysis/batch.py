@@ -66,7 +66,6 @@ def _analyze_creativity_from_individual_files(campaigns_dir: Path, max_campaigns
     return all_results
 
 
-
 def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dict, show_progress: bool) -> Dict:
     """
     Run all creativity analysis functions for a single campaign.
@@ -138,7 +137,7 @@ def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame],
     Apply all analysis functions across multiple campaigns.
     
     Args:
-        campaign_dataframes: Dictionary of campaign DataFrames from load_campaigns_by_path()
+        campaign_dataframes: Dictionary of campaign DataFrames from load_campaigns()
         original_json_data: Optional original JSON data for paragraph-level action analysis
         show_progress: Whether to show progress indicators
         
@@ -935,7 +934,7 @@ def load_or_compute_incremental(max_campaigns: int,
             print("🔄 Force refresh requested - running fresh analysis...")
         
         # Load campaigns and run analysis
-        campaign_dfs, json_data = dl.load_campaigns_by_path(data_file_path, max_campaigns, show_progress, return_json=True)
+        campaign_dfs, json_data = dl.load_campaigns(data_file_path, max_campaigns, show_progress, return_json=True)
         if not campaign_dfs:
             raise ValueError("Failed to load campaigns")
         
@@ -961,7 +960,7 @@ def load_or_compute_incremental(max_campaigns: int,
         if show_progress:
             print("📊 No cached results found - running fresh analysis...")
         
-        campaign_dfs, json_data = dl.load_campaigns_by_path(data_file_path, max_campaigns, show_progress, return_json=True)
+        campaign_dfs, json_data = dl.load_campaigns(data_file_path, max_campaigns, show_progress, return_json=True)
         if not campaign_dfs:
             raise ValueError("Failed to load campaigns")
         
@@ -983,7 +982,7 @@ def load_or_compute_incremental(max_campaigns: int,
         raise ValueError(f"Failed to load cached results for {cached_campaigns} campaigns")
     
     # Load additional campaigns
-    all_campaign_dfs, all_json_data = dl.load_campaigns_by_path(data_file_path, max_campaigns, show_progress=False, return_json=True)
+    all_campaign_dfs, all_json_data = dl.load_campaigns(data_file_path, max_campaigns, show_progress=False, return_json=True)
     if not all_campaign_dfs:
         raise ValueError("Failed to load campaigns")
     
