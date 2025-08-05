@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import litellm
+import re
 
 from .api_config import validate_api_key_for_model
 from analysis import data_loading as dl
@@ -44,7 +45,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         campaign_data = json.load(f)
     campaign_name = Path(campaign_file_path).stem
     single_campaign_data = {campaign_name: campaign_data}
-    df = dl.load_dnd_data(single_campaign_data)
+    df = dl._load_dnd_data(single_campaign_data)
 
     # Extract metadata
     character_turns = np.array(df['character'].tolist())
@@ -83,8 +84,10 @@ def extract_campaign_parameters(campaign_file_path: str,
     i = 1
     while current_char == 'Dungeon Master':
         scenario_text[str(i)] = campaign_data[str(i)]
+        scenario_text[str(i)]['date'] = datetime.now().isoformat()
         i += 1
         current_char = campaign_data[str(i)]['character']
+        
 
     return {
         'num_players': num_players,
@@ -101,6 +104,86 @@ def extract_campaign_parameters(campaign_file_path: str,
         'character_turns': character_turns,
         'initial_scenario': scenario_text
     }
+
+def parse_name_descriptions(response_text, names):
+    """
+    Parse name-description pairs from LLM response formats.
+    Assumes all formats use colon separators between names and descriptions.
+    
+    Handles formats like:
+    - name1: description1
+    - **name1**: description1
+    - Line-separated entries
+    - Handles commas within descriptions properly
+    
+    Args:
+        response_text (str): The raw LLM response text
+        names (list): List of names to look for (e.g., character names, player names)
+    
+    Returns:
+        dict: Dictionary mapping names to their descriptions
+    """
+    
+    response_text = response_text.strip()
+    personalities_dict = {}
+    
+    # Strategy 1: Line-by-line parsing (handles line-separated entries)
+    lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+    
+    for line in lines:
+        if ':' not in line:
+            continue
+            
+        # Split on first colon only
+        parts = line.split(':', 1)
+        if len(parts) != 2:
+            continue
+            
+        potential_name = parts[0].strip()
+        description = parts[1].strip()
+        
+        # Clean up potential name (remove markdown formatting, bullets, etc.)
+        clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
+        clean_name = re.sub(r'\*+', '', clean_name).strip()
+        
+        # Check if this matches any of our names (case insensitive)
+        for name in names:
+            if name.lower() == clean_name.lower():
+                personalities_dict[name] = description
+                break
+    
+    # Strategy 2: Handle comma-separated entries (only if comma appears BEFORE a colon)
+    # This catches cases like "name1: desc1, name2: desc2" but not "name1: desc with, comma in it"
+    if len(personalities_dict) < len([name for name in names if name != "Dungeon Master"]):
+        # Look for patterns where commas separate name:description pairs
+        # Use regex to find comma-separated entries that each contain name:description
+        comma_pattern = r'([^,]+:[^,]*(?:,[^:]*)*?)(?=,\s*\w+\s*:|$)'
+        matches = re.findall(comma_pattern, response_text)
+        
+        for match in matches:
+            segment = match.strip()
+            if ':' not in segment:
+                continue
+                
+            parts = segment.split(':', 1)
+            if len(parts) != 2:
+                continue
+                
+            potential_name = parts[0].strip()
+            description = parts[1].strip()
+            
+            # Clean up potential name
+            clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
+            clean_name = re.sub(r'\*+', '', clean_name).strip()
+            
+            # Check if this matches any of our names
+            for name in names:
+                if name.lower() == clean_name.lower():
+                    if name not in personalities_dict:  # Don't overwrite
+                        personalities_dict[name] = description
+                    break
+    
+    return personalities_dict
 
 def generate_character_personalities(campaign_data: Dict[str, Any],
                                      character_names: List[str],
@@ -128,7 +211,7 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
         Characters found:
         {np.array(character_names[character_names!='Dungeon Master'])}
 
-        For each character, format your response like this on a single line:
+        For each character, format your response like this on a single line, adding a blank line between each character:
 
         [Character Name]:[Detailed fictional character personality and backstory]
 
@@ -141,18 +224,16 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
     )
 
     response_text = response.choices[0].message.content
-    lines = [line.strip() for line in response_text.strip().split('\n') if ':' in line]
-    valid_lines = [line.strip() for line in lines if any(line.strip().startswith(name + ":") for name in character_names)]
+    # Parse the personalities using the general parser
+    personalities_dict = parse_name_descriptions(response_text, character_names)
+    
+    # Convert to list in the same order as character_names
     personalities = []
-
-    line_idx = 0
     for name in character_names:
         if name == "Dungeon Master":
             personalities.append(None)
         else:
-            name_in_line, desc = valid_lines[line_idx].split(':', 1)
-            personalities.append(desc.strip())
-            line_idx += 1
+            personalities.append(personalities_dict.get(name, None))
 
     return personalities
 
@@ -201,15 +282,13 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
     )
 
     response_text = response.choices[0].message.content
-    lines = [line.strip() for line in response_text.strip().split('\n') if ':' in line]
-    valid_lines = [line.strip() for line in lines if any(line.strip().startswith(name + ":") for name in player_names)]
+    # Parse the personalities using the general parser
+    personalities_dict = parse_name_descriptions(response_text, player_names)
+    
+    # Convert to list in the same order as character_names
     player_personalities = []
-
-    line_idx = 0
     for name in player_names:
-        name_in_line, desc = valid_lines[line_idx].split(':', 1)
-        player_personalities.append(desc.strip())
-        line_idx += 1
+        player_personalities.append(personalities_dict.get(name, None))
 
     return player_personalities
 
@@ -254,7 +333,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
 
         For some campaigns, the character sheet may include additional parameters containing qualitative questions and answers from the DM, such as "why are you here?" or "character background". If these aspects are provided, include them in your response.
 
-        For each character, provide a complete character sheet in this exact format:
+        For each character, provide a complete character sheet in this exact format with no additional formatting characters such as ** or --. Simply skip a line at the end of each character sheet.:
 
         [Character Name]:
         Level: [number]
@@ -290,6 +369,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
     )
 
     response_text = response.choices[0].message.content
+    print(response_text)
     character_sheets = [None] # start with DM character sheet of none
     
     # Parse response into character sheets
@@ -302,15 +382,15 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
             continue
             
         # Check if this line starts a new character
-        if any(line.startswith(name + ":") for name in character_names if name != "Dungeon Master"):
-            # Save previous character if exists
-            if current_character and current_sheet:
-                character_sheets.append(current_sheet.copy())
-            
-            # Start new character
-            current_character = line.split(':', 1)[0].strip()
-            current_sheet = {}
-            continue
+        if any(line.startswith(name + ":") or line.startswith(f"[{name}]:") 
+            for name in character_names if name != "Dungeon Master"):            # Save previous character if exists
+                if current_character and current_sheet:
+                    character_sheets.append(current_sheet.copy())
+                
+                # Start new character
+                current_character = line.split(':', 1)[0].strip()
+                current_sheet = {}
+                continue
         
         # Parse character sheet fields
         if ':' in line and current_character:
@@ -488,21 +568,17 @@ class CharacterAgent:
 
         {self.name}'s response:"""
 
-        try:
-            response = litellm.completion(
-                model=self.model,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }],
-                max_tokens=300
-            )
+        response = litellm.completion(
+            model=self.model,
+            messages=[{
+                "role": "user",
+                "content": prompt
+            }],
+            max_tokens=300
+        )
 
-            return response.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip()
 
-        except Exception as e:
-            print(f"Warning: Failed to generate response for {self.name}: {e}")
-            return f"{self.name} pauses, considering the situation carefully."
 
 
 # ===================================================================

@@ -6,9 +6,9 @@ from JSON format into pandas DataFrames. It handles both individual campaign fil
 legacy single-file formats with memory-optimized loading strategies.
 
 Functions:
-    load_dnd_data: Convert nested D&D JSON data into a clean DataFrame
-    load_all_campaigns: Load and process multiple campaigns from files
-    _load_campaigns_from_individual_files: Memory-efficient loading from individual files
+    load_campaign_data_by_name: Load campaign data by campaign name(s)
+    load_campaigns_by_path: Load and process multiple campaigns from files by path
+    _load_dnd_data: Convert nested D&D JSON data into a clean DataFrame (private helper)
     _determine_primary_label: Helper function to determine primary message label
     _detect_dice_rolls: Helper function to detect dice rolls in messages
     _classify_message_type: Helper function to classify message types
@@ -26,11 +26,71 @@ from tqdm import tqdm
 import json
 
 # ===================================================================
+# USER-FACING CAMPAIGN LOADING FUNCTIONS
+# ===================================================================
+
+
+def load_campaign_data_by_name(campaign_names: Union[str, List[str]]) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
+    """
+    Load campaign data by campaign name(s). Searches for matching JSON files in standard directories.
+    
+    Args:
+        campaign_names: Single campaign name (string) OR list of campaign names
+        
+    Returns:
+        Single DataFrame if input was a string (or None if not found)
+        Dictionary of DataFrames if input was a list (same format as load_campaigns_by_path)
+    """
+    # Normalize input to list
+    if isinstance(campaign_names, str):
+        single_input = True
+        names_to_load = [campaign_names]
+    else:
+        single_input = False
+        names_to_load = campaign_names
+    
+    # Define search directories relative to this module's location
+    module_dir = Path(__file__).parent.parent  # Go up to repository root
+    search_dirs = [
+        module_dir / 'data/raw-human-games/individual_campaigns/',
+        module_dir / 'data/llm-games/'
+    ]
+    
+    campaign_dataframes = {}
+    
+    for campaign_name in names_to_load:
+        # Search in each directory for matching JSON file
+        for search_dir in search_dirs:
+            campaign_file = search_dir / f"{campaign_name}.json"
+            
+            if campaign_file.exists():
+                # Load the campaign file
+                with open(campaign_file, 'r', encoding='utf-8') as f:
+                    campaign_data = json.load(f)
+                
+                # Create single-campaign data structure for _load_dnd_data
+                single_campaign_data = {campaign_name: campaign_data}
+                
+                # Load using helper function
+                df = _load_dnd_data(single_campaign_data)
+                
+                if len(df) > 0:
+                    campaign_dataframes[campaign_name] = df
+                    break
+    
+    # Return format based on input type
+    if single_input:
+        return campaign_dataframes.get(names_to_load[0])
+    else:
+        return campaign_dataframes
+
+
+# ===================================================================
 # SINGLE-CAMPAIGN Loading and processing
 # ===================================================================
 
 
-def load_dnd_data(json_data: Dict) -> pd.DataFrame:
+def _load_dnd_data(json_data: Dict) -> pd.DataFrame:
     """
     Convert nested D&D JSON data into a clean DataFrame with label-aware processing.
     
@@ -253,18 +313,17 @@ def _create_sessions_from_dates(df: pd.DataFrame,
 # ===================================================================
 
 
-def load_all_campaigns(
-    json_file_path: str,
+def load_campaigns_by_path(
+    path: str,
     max_campaigns: Optional[int] = None,
     show_progress: bool = True,
     return_json: bool = False) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
-    Load and process multiple campaigns from individual campaign files.
-    
-    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
+    Load and process multiple campaigns from campaign files based on path.
     
     Args:
-        json_file_path: Path to campaigns directory or legacy JSON file (auto-detects)
+        path: 'human' for data/raw-human-games/individual_campaigns/, 
+              'llm' for data/llm-games/, or custom directory path
         max_campaigns: Maximum number of campaigns to load (None for all)
         show_progress: Whether to show progress indicators
         return_json: If True, return both DataFrames and original JSON data
@@ -273,29 +332,14 @@ def load_all_campaigns(
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
         OR Tuple[Dict[str, pd.DataFrame], Dict]: (DataFrames, JSON data) if return_json=True
     """
-
-    # Auto-detect whether to use individual files or legacy format
-    json_path = Path(json_file_path)
-
-    return _load_campaigns_from_individual_files(json_path,
-                                                 max_campaigns, show_progress,
-                                                 return_json)
-
-
-def _load_campaigns_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
-                                        show_progress: bool, return_json: bool) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
-    """
-    Memory-efficient loading from individual campaign files.
     
-    Args:
-        campaigns_dir: Path to directory containing individual campaign JSON files
-        max_campaigns: Maximum number of campaigns to load (None for all)
-        show_progress: Whether to show progress indicators
-        return_json: If True, return both DataFrames and original JSON data
-        
-    Returns:
-        Campaign DataFrames and optionally JSON data
-    """
+    # Determine the actual directory path based on the path parameter
+    if path == 'human':
+        campaigns_dir = Path('data/raw-human-games/individual_campaigns/')
+    elif path == 'llm':
+        campaigns_dir = Path('data/llm-games/')
+    else:
+        campaigns_dir = Path(path)
 
     # Get sorted list of campaign files
     campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
@@ -335,7 +379,7 @@ def _load_campaigns_from_individual_files(campaigns_dir: Path, max_campaigns: Op
         single_campaign_data = {campaign_id: campaign_data}
 
         # Load using existing function
-        df = load_dnd_data(single_campaign_data)
+        df = _load_dnd_data(single_campaign_data)
 
         # Only keep non-empty campaigns
         if len(df) > 0:
