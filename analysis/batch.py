@@ -78,43 +78,6 @@ def analyze_all_campaigns(campaign_dataframes: Dict[str, pd.DataFrame],
     
     return results
 
-def analyze_dsi_all_campaigns(data_file_path: Optional[str] = None,
-                            max_campaigns: Optional[int] = None,
-                            show_progress: bool = True,
-                            cache_dir: Optional[str] = None,
-                            force_refresh: bool = False) -> Dict:
-    """
-    Calculate DSI metrics for multiple campaigns with memory-efficient loading.
-    
-    MEMORY OPTIMIZED: Loads individual campaign files instead of entire JSON file.
-    
-    Args:
-        data_file_path: Path to campaigns directory or legacy JSON file (auto-detects)
-                       If None, defaults to 'data/raw-human-games/individual_campaigns' relative to repo root
-        max_campaigns: Maximum number of campaigns to process
-        show_progress: Whether to show progress indicators
-        cache_dir: Directory to store cache files
-        force_refresh: Whether to force recalculation even if cache exists
-        
-    Returns:
-        dict: Campaign IDs mapped to DSI analysis results
-    """
-    # Set default paths relative to the repository root
-    repo_root = Path(__file__).parent.parent
-    if data_file_path is None:
-        data_file_path = str(repo_root / 'data' / 'raw-human-games' / 'individual_campaigns')
-    if cache_dir is None:
-        cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_cache')
-    
-    # Create cache directory
-    cache_path = Path(cache_dir)
-    cache_path.mkdir(parents=True, exist_ok=True)
-    
-    # Use individual campaign files directly
-    return creativity._analyze_dsi_from_individual_files(
-        Path(data_file_path), max_campaigns, cache_dir, force_refresh, show_progress
-    )
-
 def generate_multi_campaign_summary(campaign_dataframes: Dict[str, pd.DataFrame], 
                                    per_campaign_results: Dict[str, Dict]) -> Dict:
     """

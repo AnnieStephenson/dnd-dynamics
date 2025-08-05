@@ -751,210 +751,83 @@ def calculate_campaign_average_dsi(campaign_data):
     return analysis['time_averaged_dsi']
 
 
-def _analyze_dsi_from_individual_files(campaigns_dir: Path, max_campaigns: Optional[int],
-                                     cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
+
+
+def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str, target_words: int = 175, show_progress: bool = False) -> Optional[Dict]:
     """
-    Memory-efficient DSI analysis using individual campaign files.
+    Run DSI analysis for a single campaign using DataFrame.
     
     Args:
-        campaigns_dir: Path to directory containing individual campaign JSON files
-        max_campaigns: Maximum number of campaigns to analyze (None for all)
-        cache_dir: Directory to store cached results
-        force_refresh: Whether to force recalculation even if cache exists
-        show_progress: Whether to show progress indicators
-        
-    Returns:
-        Dict with DSI analysis results for each campaign
-    """
-
-    tqdm = tqdm if show_progress else None
-
-    # Get sorted list of campaign files
-    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
-
-    if not campaign_files:
-        if show_progress:
-            print(f"❌ No campaign files found in {campaigns_dir}")
-        return {}
-
-    total_available = len(campaign_files)
-    campaigns_to_analyze = min(max_campaigns, total_available) if max_campaigns is not None else total_available
-
-    # Create cache file name based on number of campaigns
-    cache_file = Path(cache_dir) / f'dsi_analysis_{campaigns_to_analyze}_campaigns.pkl'
-
-    # Check for existing cache
-    if not force_refresh and cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            cached_results = pickle.load(f)
-        if show_progress:
-            print(f"📁 Loaded cached DSI results for {campaigns_to_analyze} campaigns from {cache_file.name}")
-        return cached_results
-
-    if show_progress:
-        print(f"🧠 Analyzing DSI metrics from individual files in {campaigns_dir}")
-        print(f"📊 Found {total_available} campaign files")
-        if max_campaigns is not None:
-            print(f"🎯 Analyzing first {campaigns_to_analyze} campaigns (max_campaigns={max_campaigns})")
-
-    # Process only the required number of files
-    files_to_process = campaign_files[:campaigns_to_analyze]
-    all_results = {}
-
-    # Progress indicator
-    if show_progress and len(files_to_process) > 1:
-        iterator = tqdm(files_to_process, desc="Analyzing campaign DSI")
-    else:
-        iterator = files_to_process
-
-    successful_campaigns = 0
-    total_scenes = 0
-
-    for campaign_file in iterator:
-        # Extract campaign ID from filename (without extension)
-        campaign_id = campaign_file.stem
-
-        # Load individual campaign file
-        with open(campaign_file, 'r', encoding='utf-8') as f:
-            campaign_data = json.load(f)
-
-        # Run DSI analysis for this campaign
-        campaign_results = _analyze_single_campaign_dsi(
-            campaign_data, campaign_id, show_progress
-        )
-
-        if campaign_results is not None:
-            all_results[campaign_id] = campaign_results
-            total_scenes += campaign_results.get('scene_count', 0)
-            successful_campaigns += 1
-
-    if show_progress:
-        print(f"✅ Successfully analyzed DSI for {successful_campaigns} campaigns")
-        print(f"📈 Total scenes across all campaigns: {total_scenes:,}")
-
-        # Memory efficiency report
-        if max_campaigns is not None and max_campaigns < total_available:
-            memory_saved = total_available - campaigns_to_analyze
-            print(f"💾 Memory optimization: Avoided loading {memory_saved} unnecessary campaigns")
-
-    # Cache results
-    with open(cache_file, 'wb') as f:
-        pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-    if show_progress:
-        file_size = os.path.getsize(cache_file) / (1024 * 1024)  # MB
-        print(f"💾 Saved DSI cache: {cache_file.name} ({file_size:.2f} MB)")
-
-    return all_results
-
-
-def _analyze_dsi_from_json_file(data_file_path: str, max_campaigns: Optional[int],
-                              cache_dir: str, force_refresh: bool, show_progress: bool) -> Dict:
-    """
-    Legacy DSI analysis from single large JSON file.
-    
-    Args:
-        data_file_path: Path to JSON file containing multiple campaigns
-        max_campaigns: Maximum number of campaigns to analyze (None for all)
-        cache_dir: Directory to store cached results
-        force_refresh: Whether to force recalculation even if cache exists
-        show_progress: Whether to show progress indicators
-        
-    Returns:
-        Dict with DSI analysis results for each campaign
-    """
-    tqdm = tqdm if show_progress else None
-
-    if show_progress:
-        print(f"📁 Loading campaigns from JSON file: {data_file_path}")
-
-    # Load and validate data
-    with open(data_file_path, 'r') as f:
-        all_data = json.load(f)
-
-    campaigns = list(all_data.keys())
-    if max_campaigns:
-        campaigns = campaigns[:max_campaigns]
-
-    # Create cache file name
-    cache_file = Path(cache_dir) / f'dsi_analysis_{len(campaigns)}_campaigns.pkl'
-
-    # Check for existing cache
-    if not force_refresh and cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            cached_results = pickle.load(f)
-        if show_progress:
-            print(f"📁 Loaded cached DSI results for {len(campaigns)} campaigns from {cache_file.name}")
-        return cached_results
-
-    if show_progress:
-        print(f"📊 Found {len(all_data)} campaigns")
-        if max_campaigns is not None:
-            print(f"🎯 Analyzing first {len(campaigns)} campaigns")
-
-    all_results = {}
-
-    # Process each campaign
-    if show_progress and len(campaigns) > 1:
-        campaign_iterator = tqdm(campaigns, desc="Analyzing campaign DSI")
-    else:
-        campaign_iterator = campaigns
-
-    for campaign_id in campaign_iterator:
-        # Load single campaign data
-        campaign_data = all_data[campaign_id]
-
-        # Run DSI analysis for this campaign
-        campaign_results = _analyze_single_campaign_dsi(
-            campaign_data, campaign_id, show_progress
-        )
-
-        if campaign_results is not None:
-            all_results[campaign_id] = campaign_results
-
-    # Cache results
-    with open(cache_file, 'wb') as f:
-        pickle.dump(all_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-    if show_progress:
-        file_size = os.path.getsize(cache_file) / (1024 * 1024)  # MB
-        print(f"💾 Saved DSI cache: {cache_file.name} ({file_size:.2f} MB)")
-
-    return all_results
-
-def _analyze_single_campaign_dsi(campaign_data: dict, campaign_id: str, show_progress: bool) -> Optional[Dict]:
-    """
-    Run DSI analysis for a single campaign.
-    
-    Args:
-        campaign_data: Raw campaign data
+        df: Campaign DataFrame with 'text' column
         campaign_id: Campaign identifier
+        target_words: Words per scene for DSI calculation
         show_progress: Whether to show progress indicators
         
     Returns:
         Dict with DSI analysis results or None if analysis failed
     """
-    # Use the existing analyze_campaign_dsi_over_time function
-    dsi_analysis = analyze_campaign_dsi_over_time(campaign_data)
+    # Convert DataFrame to list of messages for scene creation
+    messages = []
+    for idx, row in df.iterrows():
+        messages.append({'text': row['text'], 'message_id': idx})
+
+    # Create scenes
+    scenes = create_word_scenes(messages, target_words=target_words)
+
+    # Calculate DSI for each scene
+    scene_dsi_scores = []
+    scene_word_counts = []
+    total_scenes = len(scenes)
+    
+    for i, scene in enumerate(scenes):
+        # Combine all message text in this scene
+        scene_text = ' '.join([msg['text'] for msg in scene if msg.get('text')])
+        
+        if scene_text.strip():
+            # Calculate DSI score
+            scene_dsi = calculate_dsi_bert(scene_text)
+            scene_dsi_scores.append(scene_dsi)
+            
+            # Count words in scene
+            word_count = len(scene_text.split())
+            scene_word_counts.append(word_count)
+        else:
+            scene_dsi_scores.append(np.nan)
+            scene_word_counts.append(0)
+
+    # Calculate time-averaged DSI (excluding NaN values)
+    valid_scores = [score for score in scene_dsi_scores if not np.isnan(score)]
+    time_averaged_dsi = np.mean(valid_scores) if valid_scores else np.nan
+
+    dsi_analysis = {
+        'scene_dsi_scores': scene_dsi_scores,
+        'scene_word_counts': scene_word_counts,
+        'time_averaged_dsi': time_averaged_dsi,
+        'scene_count': total_scenes
+    }
 
     # Add campaign metadata
     dsi_analysis['metadata'] = {
         'campaign_id': campaign_id,
-        'total_messages': len(campaign_data),
+        'total_messages': len(df),
     }
 
     return dsi_analysis
+
+
+
 
 # ===================================================================
 # Multi-metric ANALYSIS 
 # ===================================================================
 
-def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dict, show_progress: bool) -> Dict:
+def _analyze_single_campaign_creativity(df, campaign_id: str, show_progress: bool) -> Dict:
     """
     Run all creativity analysis functions for a single campaign.
     
     Args:
         df: Loaded campaign DataFrame
         campaign_id: Campaign identifier
-        campaign_data: Raw campaign data
         show_progress: Whether to show progress indicators
         
     Returns:
@@ -1006,11 +879,9 @@ def _analyze_single_campaign_creativity(df, campaign_id: str, campaign_data: dic
     
     return campaign_results
 
-
 def analyze_creativity(
     data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
-    show_progress: bool = True,
-    **kwargs
+    show_progress: bool = True
 ) -> Union[Dict, Dict[str, Dict]]:
     """
     Analyze creativity metrics for single or multiple campaigns.
@@ -1018,18 +889,14 @@ def analyze_creativity(
     Args:
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
-        **kwargs: Additional arguments passed to single-campaign analysis
         
     Returns:
         Dict of results for single campaign, or Dict[campaign_id, results] for multiple
     """
     if isinstance(data, pd.DataFrame):
         # Single campaign analysis
-        campaign_id = kwargs.get('campaign_id', 'single_campaign')
-        campaign_data = kwargs.get('campaign_data', {})
-        return _analyze_single_campaign_creativity(
-            data, campaign_id, campaign_data, show_progress=False
-        )
+        campaign_id = "not specified"
+        return _analyze_single_campaign_creativity(data, campaign_id, show_progress=False)
     
     elif isinstance(data, dict):
         # Multiple campaign analysis
@@ -1042,9 +909,50 @@ def analyze_creativity(
             iterator = data.items()
         
         for campaign_id, df in iterator:
-            campaign_data = kwargs.get('campaign_data', {}).get(campaign_id, {})
             results[campaign_id] = _analyze_single_campaign_creativity(
-                df, campaign_id, campaign_data, show_progress=False
+                df, campaign_id, show_progress=False
+            )
+        
+        return results
+    
+    else:
+        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+
+
+def analyze_dsi(
+    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    target_words: int = 175,
+    show_progress: bool = True
+) -> Union[Dict, Dict[str, Dict]]:
+    """
+    Calculate DSI metrics for single or multiple campaigns using DataFrames.
+    
+    Args:
+        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        target_words: Words per scene for DSI calculation
+        show_progress: Whether to show progress for multi-campaign analysis
+        
+    Returns:
+        Dict of DSI results for single campaign, or Dict[campaign_id, results] for multiple
+    """
+    if isinstance(data, pd.DataFrame):
+        # Single campaign analysis
+        campaign_id = "not specified"
+        return _analyze_single_campaign_dsi(data, campaign_id, target_words=target_words, show_progress=False)
+    
+    elif isinstance(data, dict):
+        # Multiple campaign analysis
+        results = {}
+        
+        # Prepare iterator with progress bar if requested
+        if show_progress and len(data) > 1:
+            iterator = tqdm(data.items(), desc="Analyzing campaign DSI", total=len(data))
+        else:
+            iterator = data.items()
+        
+        for campaign_id, df in iterator:
+            results[campaign_id] = _analyze_single_campaign_dsi(
+                df, campaign_id, target_words=target_words, show_progress=False
             )
         
         return results
