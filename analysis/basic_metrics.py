@@ -9,8 +9,132 @@ dice rolls, and action classifications to understand campaign dynamics and playe
 
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from . import data_loading as dl
+from . import batch
+from tqdm import tqdm
+
+# ===================================================================
+# User facing multi-parameter and/or multi campaign
+# ===================================================================
+
+def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> Dict:
+    """
+    Run all basic analysis functions for a single campaign.
+    
+    Args:
+        df: Campaign DataFrame
+        
+    Returns:
+        Dict with basic analysis results
+    """
+    return {
+        'time_intervals_overall': analyze_time_intervals(df, by_player=False),
+        'time_intervals_by_player': analyze_time_intervals(df, by_player=True),
+        'cumulative_posts_overall': analyze_cumulative_posts(df, by_player=False),
+        'cumulative_posts_by_player': analyze_cumulative_posts(df, by_player=True),
+        'unique_players_characters': analyze_unique_players_characters(df),
+        'post_lengths_overall': analyze_post_lengths(df, by_player=False),
+        'post_lengths_by_player': analyze_post_lengths(df, by_player=True),
+        'post_lengths_by_label_overall': analyze_post_lengths_by_label(df, by_player=False),
+        'post_lengths_by_label_by_player': analyze_post_lengths_by_label(df, by_player=True),
+        'character_mentions': analyze_character_mentions(df),
+        'dice_roll_frequency': analyze_dice_roll_frequency(df),
+        'summary_report': generate_summary_report(df)
+    }
+
+
+def analyze_basic_metrics(
+    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    show_progress: bool = True,
+    cache_dir: Optional[str] = None,
+    force_refresh: bool = False
+) -> Union[Dict, Dict[str, Dict]]:
+    """
+    Analyze basic metrics for single or multiple campaigns using DataFrames.
+    
+    Args:
+        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        show_progress: Whether to show progress for multi-campaign analysis
+        cache_dir: Directory for caching results (defaults to data/processed/basic_results)
+        force_refresh: Whether to force recomputation even if cached results exist
+        
+    Returns:
+        Dict of basic metrics for single campaign, or Dict[campaign_id, metrics] for multiple
+    """
+    if isinstance(data, pd.DataFrame):
+        # Single campaign analysis - no caching for single campaigns
+        return _analyze_single_campaign_basic_metrics(data)
+    
+    elif isinstance(data, dict):
+        # Multiple campaign analysis with caching support
+        
+        # Set default cache directory
+        if cache_dir is None:
+            repo_root = Path(__file__).parent.parent
+            cache_dir = str(repo_root / 'data' / 'processed' / 'basic_results')
+        
+        # Handle caching using helper function
+        cached_results, data_to_process = batch.handle_multi_campaign_caching(
+            data, cache_dir, force_refresh, show_progress, "basic metrics"
+        )
+        
+        # Process missing campaigns
+        new_results = {}
+        if data_to_process:
+            if show_progress and len(data_to_process) > 1:
+                iterator = tqdm(data_to_process.items(), desc="Analyzing campaigns", total=len(data_to_process))
+            else:
+                iterator = data_to_process.items()
+            
+            for campaign_id, df in iterator:
+                new_results[campaign_id] = _analyze_single_campaign_basic_metrics(df)
+        
+        # Save new results and combine with cached results
+        return batch.save_new_results_and_combine(
+            cached_results, new_results, cache_dir, show_progress, "basic metrics"
+        )
+    
+    else:
+        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+
+
+def list_campaigns_by_size(campaign_dataframes: Dict[str, pd.DataFrame],
+                          top_n: int = 10) -> List[Tuple[str, int]]:
+    """
+    List campaigns sorted by size (number of messages).
+    
+    Args:
+        campaign_dataframes: Dictionary of campaign DataFrames
+        top_n: Number of top campaigns to return
+        
+    Returns:
+        List of (campaign_id, message_count) tuples sorted by size
+    """
+    campaign_sizes = [(cid, len(df)) for cid, df in campaign_dataframes.items()]
+    campaign_sizes.sort(key=lambda x: x[1], reverse=True)
+    return campaign_sizes[:top_n]
+
+
+def get_campaign_sample(campaign_dataframes: Dict[str, pd.DataFrame], 
+                       campaign_id: str) -> Optional[pd.DataFrame]:
+    """
+    Get a specific campaign's DataFrame for individual analysis.
+    
+    Args:
+        campaign_dataframes: Dictionary of campaign DataFrames
+        campaign_id: ID of the campaign to retrieve
+        
+    Returns:
+        DataFrame for the specified campaign, or None if not found
+    """
+    return campaign_dataframes.get(campaign_id)
+
+
+# ===================================================================
+# SINGLE DF FUNCTIONS
+# ===================================================================
 
 
 def analyze_time_intervals(df: pd.DataFrame, by_player: bool = False) -> Dict:
@@ -293,6 +417,141 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
     return results
 
 
+def analyze_character_mentions(df: pd.DataFrame, top_n: int = 15) -> Dict:
+    """
+    Analyze most frequently mentioned character names.
+    
+    Args:
+        df: DataFrame containing D&D messages
+        top_n: Number of top characters to include
+        
+    Returns:
+        Dict containing character mention statistics and data for plotting
+    """
+    # Flatten all name mentions
+    all_mentions = []
+    for mentions in df['name_mentions'].dropna():
+        if isinstance(mentions, list):
+            all_mentions.extend(mentions)
+
+    # Count mentions
+    mention_counts = pd.Series(all_mentions).value_counts()
+    top_mentions = mention_counts.head(top_n)
+
+    return {
+        'total_mentions': len(all_mentions),
+        'unique_characters_mentioned': len(mention_counts),
+        'top_mentions': top_mentions.to_dict(),
+        'top_mentions_names': top_mentions.index.tolist(),
+        'top_mentions_counts': top_mentions.values.tolist(),
+        'full_counts': mention_counts.to_dict()
+    }
+
+
+def analyze_dice_roll_frequency(df: pd.DataFrame) -> Dict:
+    """
+    Analyze fraction of posts containing dice rolls.
+    
+    Args:
+        df: DataFrame containing D&D messages
+        
+    Returns:
+        Dict containing dice roll statistics and data for plotting
+    """
+    total_posts = len(df)
+    posts_with_rolls = df['has_dice_roll'].sum()
+    roll_percentage = (posts_with_rolls / total_posts) * 100
+
+    # Analyze by player
+    player_roll_stats = df.groupby('player')['has_dice_roll'].agg(['count', 'sum']).reset_index()
+    player_roll_stats['percentage'] = (player_roll_stats['sum'] / player_roll_stats['count']) * 100
+    player_roll_stats = player_roll_stats[player_roll_stats['count'] >= 5]  # Filter players with <5 posts
+    player_roll_stats = player_roll_stats.sort_values('percentage', ascending=False)
+
+    # Time series of dice rolls
+    df_sorted = df.sort_values('date').copy()
+    daily_rolls = df_sorted.groupby(df_sorted['date'].dt.date).agg({
+        'has_dice_roll': ['count', 'sum']
+    }).reset_index()
+    daily_rolls.columns = ['date', 'total_posts', 'posts_with_rolls']
+    daily_rolls['roll_percentage'] = (daily_rolls['posts_with_rolls'] / daily_rolls['total_posts']) * 100
+
+    return {
+        'total_posts': total_posts,
+        'posts_with_rolls': posts_with_rolls,
+        'roll_percentage': roll_percentage,
+        'posts_without_rolls': total_posts - posts_with_rolls,
+        'player_stats': player_roll_stats.to_dict('records'),
+        'player_names': player_roll_stats['player'].tolist(),
+        'player_percentages': player_roll_stats['percentage'].tolist(),
+        'daily_data': daily_rolls,
+        'daily_dates': daily_rolls['date'].tolist(),
+        'daily_percentages': daily_rolls['roll_percentage'].tolist()
+    }
+
+
+def generate_summary_report(df: pd.DataFrame) -> Dict:
+    """
+    Generate a comprehensive summary report of the D&D campaign.
+    
+    Args:
+        df: DataFrame containing D&D messages
+        
+    Returns:
+        Dict containing comprehensive campaign statistics
+    """
+    total_posts = len(df)
+    date_range = df['date'].max() - df['date'].min()
+    unique_players = df['player'].nunique()
+    unique_characters = df['character'].nunique()
+
+    report = {
+        'campaign_overview': {
+            'total_posts':
+            total_posts,
+            'campaign_duration_days':
+            date_range.days,
+            'unique_players':
+            unique_players,
+            'unique_characters':
+            unique_characters,
+            'posts_per_day':
+            total_posts / max(date_range.days, 1),
+            'date_range':
+            f"{df['date'].min().strftime('%Y-%m-%d')} to {df['date'].max().strftime('%Y-%m-%d')}"
+        },
+        'posting_patterns': {
+            'most_active_player':
+            df['player'].value_counts().index[0] if len(df) > 0 else None,
+            'posts_by_most_active':
+            df['player'].value_counts().iloc[0] if len(df) > 0 else 0,
+            'average_post_length':
+            df['word_count'].mean(),
+            'longest_post_words':
+            df['word_count'].max()
+        },
+        'gameplay_characteristics': {
+            'dice_roll_percentage':
+            (df['has_dice_roll'].sum() / total_posts) * 100,
+            'action_percentage':
+            (df['message_type'].value_counts().get('action', 0) / total_posts)
+            * 100,
+            'dialogue_percentage':
+            (df['message_type'].value_counts().get('dialogue', 0) /
+             total_posts) * 100,
+            'combat_posts':
+            df['in_combat'].sum(),
+            'combat_percentage': (df['in_combat'].sum() / total_posts) * 100
+        }
+    }
+
+    return report
+
+
+# ===================================================================
+# JSON FUNCTIONS
+# ===================================================================
+
 def analyze_paragraph_actions(json_data: Dict) -> Dict:
     """
     Analyze paragraph-level action types based on actual data structure.
@@ -454,165 +713,3 @@ def analyze_paragraph_actions(json_data: Dict) -> Dict:
 
     return action_counts
 
-
-
-def analyze_character_mentions(df: pd.DataFrame, top_n: int = 15) -> Dict:
-    """
-    Analyze most frequently mentioned character names.
-    
-    Args:
-        df: DataFrame containing D&D messages
-        top_n: Number of top characters to include
-        
-    Returns:
-        Dict containing character mention statistics and data for plotting
-    """
-    # Flatten all name mentions
-    all_mentions = []
-    for mentions in df['name_mentions'].dropna():
-        if isinstance(mentions, list):
-            all_mentions.extend(mentions)
-
-    # Count mentions
-    mention_counts = pd.Series(all_mentions).value_counts()
-    top_mentions = mention_counts.head(top_n)
-
-    return {
-        'total_mentions': len(all_mentions),
-        'unique_characters_mentioned': len(mention_counts),
-        'top_mentions': top_mentions.to_dict(),
-        'top_mentions_names': top_mentions.index.tolist(),
-        'top_mentions_counts': top_mentions.values.tolist(),
-        'full_counts': mention_counts.to_dict()
-    }
-
-
-def analyze_dice_roll_frequency(df: pd.DataFrame) -> Dict:
-    """
-    Analyze fraction of posts containing dice rolls.
-    
-    Args:
-        df: DataFrame containing D&D messages
-        
-    Returns:
-        Dict containing dice roll statistics and data for plotting
-    """
-    total_posts = len(df)
-    posts_with_rolls = df['has_dice_roll'].sum()
-    roll_percentage = (posts_with_rolls / total_posts) * 100
-
-    # Analyze by player
-    player_roll_stats = df.groupby('player')['has_dice_roll'].agg(['count', 'sum']).reset_index()
-    player_roll_stats['percentage'] = (player_roll_stats['sum'] / player_roll_stats['count']) * 100
-    player_roll_stats = player_roll_stats[player_roll_stats['count'] >= 5]  # Filter players with <5 posts
-    player_roll_stats = player_roll_stats.sort_values('percentage', ascending=False)
-
-    # Time series of dice rolls
-    df_sorted = df.sort_values('date').copy()
-    daily_rolls = df_sorted.groupby(df_sorted['date'].dt.date).agg({
-        'has_dice_roll': ['count', 'sum']
-    }).reset_index()
-    daily_rolls.columns = ['date', 'total_posts', 'posts_with_rolls']
-    daily_rolls['roll_percentage'] = (daily_rolls['posts_with_rolls'] / daily_rolls['total_posts']) * 100
-
-    return {
-        'total_posts': total_posts,
-        'posts_with_rolls': posts_with_rolls,
-        'roll_percentage': roll_percentage,
-        'posts_without_rolls': total_posts - posts_with_rolls,
-        'player_stats': player_roll_stats.to_dict('records'),
-        'player_names': player_roll_stats['player'].tolist(),
-        'player_percentages': player_roll_stats['percentage'].tolist(),
-        'daily_data': daily_rolls,
-        'daily_dates': daily_rolls['date'].tolist(),
-        'daily_percentages': daily_rolls['roll_percentage'].tolist()
-    }
-
-
-def list_campaigns_by_size(campaign_dataframes: Dict[str, pd.DataFrame],
-                          top_n: int = 10) -> List[Tuple[str, int]]:
-    """
-    List campaigns sorted by size (number of messages).
-    
-    Args:
-        campaign_dataframes: Dictionary of campaign DataFrames
-        top_n: Number of top campaigns to return
-        
-    Returns:
-        List of (campaign_id, message_count) tuples sorted by size
-    """
-    campaign_sizes = [(cid, len(df)) for cid, df in campaign_dataframes.items()]
-    campaign_sizes.sort(key=lambda x: x[1], reverse=True)
-    return campaign_sizes[:top_n]
-
-
-def generate_summary_report(df: pd.DataFrame) -> Dict:
-    """
-    Generate a comprehensive summary report of the D&D campaign.
-    
-    Args:
-        df: DataFrame containing D&D messages
-        
-    Returns:
-        Dict containing comprehensive campaign statistics
-    """
-    total_posts = len(df)
-    date_range = df['date'].max() - df['date'].min()
-    unique_players = df['player'].nunique()
-    unique_characters = df['character'].nunique()
-
-    report = {
-        'campaign_overview': {
-            'total_posts':
-            total_posts,
-            'campaign_duration_days':
-            date_range.days,
-            'unique_players':
-            unique_players,
-            'unique_characters':
-            unique_characters,
-            'posts_per_day':
-            total_posts / max(date_range.days, 1),
-            'date_range':
-            f"{df['date'].min().strftime('%Y-%m-%d')} to {df['date'].max().strftime('%Y-%m-%d')}"
-        },
-        'posting_patterns': {
-            'most_active_player':
-            df['player'].value_counts().index[0] if len(df) > 0 else None,
-            'posts_by_most_active':
-            df['player'].value_counts().iloc[0] if len(df) > 0 else 0,
-            'average_post_length':
-            df['word_count'].mean(),
-            'longest_post_words':
-            df['word_count'].max()
-        },
-        'gameplay_characteristics': {
-            'dice_roll_percentage':
-            (df['has_dice_roll'].sum() / total_posts) * 100,
-            'action_percentage':
-            (df['message_type'].value_counts().get('action', 0) / total_posts)
-            * 100,
-            'dialogue_percentage':
-            (df['message_type'].value_counts().get('dialogue', 0) /
-             total_posts) * 100,
-            'combat_posts':
-            df['in_combat'].sum(),
-            'combat_percentage': (df['in_combat'].sum() / total_posts) * 100
-        }
-    }
-
-    return report
-
-def get_campaign_sample(campaign_dataframes: Dict[str, pd.DataFrame], 
-                       campaign_id: str) -> Optional[pd.DataFrame]:
-    """
-    Get a specific campaign's DataFrame for individual analysis.
-    
-    Args:
-        campaign_dataframes: Dictionary of campaign DataFrames
-        campaign_id: ID of the campaign to retrieve
-        
-    Returns:
-        DataFrame for the specified campaign, or None if not found
-    """
-    return campaign_dataframes.get(campaign_id)

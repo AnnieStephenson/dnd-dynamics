@@ -31,6 +31,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # Import other modules using relative imports
 from . import data_loading as dl
+from . import batch
 
 
 # ===================================================================
@@ -881,7 +882,9 @@ def _analyze_single_campaign_creativity(df, campaign_id: str, show_progress: boo
 
 def analyze_creativity(
     data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
-    show_progress: bool = True
+    show_progress: bool = True,
+    cache_dir: Optional[str] = None,
+    force_refresh: bool = False
 ) -> Union[Dict, Dict[str, Dict]]:
     """
     Analyze creativity metrics for single or multiple campaigns.
@@ -889,31 +892,47 @@ def analyze_creativity(
     Args:
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
+        cache_dir: Directory for caching results (defaults to data/processed/creativity_results)
+        force_refresh: Whether to force recomputation even if cached results exist
         
     Returns:
         Dict of results for single campaign, or Dict[campaign_id, results] for multiple
     """
     if isinstance(data, pd.DataFrame):
-        # Single campaign analysis
+        # Single campaign analysis - no caching for single campaigns
         campaign_id = "not specified"
         return _analyze_single_campaign_creativity(data, campaign_id, show_progress=False)
     
     elif isinstance(data, dict):
-        # Multiple campaign analysis
-        results = {}
+        # Multiple campaign analysis with caching support
         
-        # Prepare iterator with progress bar if requested
-        if show_progress and len(data) > 1:
-            iterator = tqdm(data.items(), desc="Analyzing campaigns", total=len(data))
-        else:
-            iterator = data.items()
+        # Set default cache directory
+        if cache_dir is None:
+            repo_root = Path(__file__).parent.parent
+            cache_dir = str(repo_root / 'data' / 'processed' / 'creativity_results')
         
-        for campaign_id, df in iterator:
-            results[campaign_id] = _analyze_single_campaign_creativity(
-                df, campaign_id, show_progress=False
-            )
+        # Handle caching using helper function
+        cached_results, data_to_process = batch.handle_multi_campaign_caching(
+            data, cache_dir, force_refresh, show_progress, "creativity"
+        )
         
-        return results
+        # Process missing campaigns
+        new_results = {}
+        if data_to_process:
+            if show_progress and len(data_to_process) > 1:
+                iterator = tqdm(data_to_process.items(), desc="Analyzing creativity", total=len(data_to_process))
+            else:
+                iterator = data_to_process.items()
+            
+            for campaign_id, df in iterator:
+                new_results[campaign_id] = _analyze_single_campaign_creativity(
+                    df, campaign_id, show_progress=False
+                )
+        
+        # Save new results and combine with cached results
+        return batch.save_new_results_and_combine(
+            cached_results, new_results, cache_dir, show_progress, "creativity"
+        )
     
     else:
         raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
@@ -922,7 +941,9 @@ def analyze_creativity(
 def analyze_dsi(
     data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     target_words: int = 175,
-    show_progress: bool = True
+    show_progress: bool = True,
+    cache_dir: Optional[str] = None,
+    force_refresh: bool = False
 ) -> Union[Dict, Dict[str, Dict]]:
     """
     Calculate DSI metrics for single or multiple campaigns using DataFrames.
@@ -931,31 +952,47 @@ def analyze_dsi(
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         target_words: Words per scene for DSI calculation
         show_progress: Whether to show progress for multi-campaign analysis
+        cache_dir: Directory for caching results (defaults to data/processed/dsi_results)
+        force_refresh: Whether to force recomputation even if cached results exist
         
     Returns:
         Dict of DSI results for single campaign, or Dict[campaign_id, results] for multiple
     """
     if isinstance(data, pd.DataFrame):
-        # Single campaign analysis
+        # Single campaign analysis - no caching for single campaigns
         campaign_id = "not specified"
         return _analyze_single_campaign_dsi(data, campaign_id, target_words=target_words, show_progress=False)
     
     elif isinstance(data, dict):
-        # Multiple campaign analysis
-        results = {}
+        # Multiple campaign analysis with caching support
         
-        # Prepare iterator with progress bar if requested
-        if show_progress and len(data) > 1:
-            iterator = tqdm(data.items(), desc="Analyzing campaign DSI", total=len(data))
-        else:
-            iterator = data.items()
+        # Set default cache directory
+        if cache_dir is None:
+            repo_root = Path(__file__).parent.parent
+            cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_results')
         
-        for campaign_id, df in iterator:
-            results[campaign_id] = _analyze_single_campaign_dsi(
-                df, campaign_id, target_words=target_words, show_progress=False
-            )
+        # Handle caching using helper function
+        cached_results, data_to_process = batch.handle_multi_campaign_caching(
+            data, cache_dir, force_refresh, show_progress, "DSI"
+        )
         
-        return results
+        # Process missing campaigns
+        new_results = {}
+        if data_to_process:
+            if show_progress and len(data_to_process) > 1:
+                iterator = tqdm(data_to_process.items(), desc="Analyzing campaign DSI", total=len(data_to_process))
+            else:
+                iterator = data_to_process.items()
+            
+            for campaign_id, df in iterator:
+                new_results[campaign_id] = _analyze_single_campaign_dsi(
+                    df, campaign_id, target_words=target_words, show_progress=False
+                )
+        
+        # Save new results and combine with cached results
+        return batch.save_new_results_and_combine(
+            cached_results, new_results, cache_dir, show_progress, "DSI"
+        )
     
     else:
         raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
