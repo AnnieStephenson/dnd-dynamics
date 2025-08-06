@@ -45,8 +45,7 @@ def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> Dict:
     }
 
 
-def analyze_basic_metrics(
-    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_basic_metrics(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     show_progress: bool = True,
     cache_dir: Optional[str] = None,
     force_refresh: bool = False

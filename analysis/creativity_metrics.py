@@ -880,6 +880,10 @@ def _analyze_single_campaign_creativity(df, campaign_id: str, show_progress: boo
     
     return campaign_results
 
+# ===================================================================
+# User functions
+# ===================================================================
+
 def analyze_creativity(
     data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     show_progress: bool = True,

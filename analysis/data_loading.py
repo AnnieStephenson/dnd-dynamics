@@ -29,9 +29,7 @@ import json
 # ===================================================================
 
 
-def load_campaigns(
-    source: Union[str, List[str], Path],
-    max_campaigns: Optional[int] = None,
+def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[int] = None,
     show_progress: bool = True,
     return_json: bool = False
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
