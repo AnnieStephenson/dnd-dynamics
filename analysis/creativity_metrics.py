@@ -753,7 +753,6 @@ def calculate_campaign_average_dsi(campaign_data):
 
 
 
-
 def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str, target_words: int = 175, show_progress: bool = False) -> Optional[Dict]:
     """
     Run DSI analysis for a single campaign using DataFrame.
@@ -884,8 +883,7 @@ def _analyze_single_campaign_creativity(df, campaign_id: str, show_progress: boo
 # User functions
 # ===================================================================
 
-def analyze_creativity(
-    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_creativity(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     show_progress: bool = True,
     cache_dir: Optional[str] = None,
     force_refresh: bool = False
@@ -942,9 +940,7 @@ def analyze_creativity(
         raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
 
 
-def analyze_dsi(
-    data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
-    target_words: int = 175,
+def analyze_dsi(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]], target_words: int = 175,
     show_progress: bool = True,
     cache_dir: Optional[str] = None,
     force_refresh: bool = False
