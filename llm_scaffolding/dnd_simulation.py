@@ -20,12 +20,13 @@ import litellm
 import re
 
 from .api_config import validate_api_key_for_model
+from . import prompt_caching as pc
 from analysis import data_loading as dl
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
 # ===================================================================
 
-def extract_campaign_parameters(campaign_file_path: str, 
+def extract_campaign_parameters(campaign_file_path: str,
                                 model: str = "claude-3-5-sonnet-20240620") -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
@@ -67,16 +68,16 @@ def extract_campaign_parameters(campaign_file_path: str,
         campaign_data=campaign_data,
         character_names=character_names,
         model=model)
-    
+
     player_personalities = generate_player_personalities(
         campaign_data=campaign_data,
         player_names=player_names,
         model=model)
-    
+
     character_sheets = generate_character_sheets(
         campaign_data=campaign_data,
         character_names=character_names,
-        model=model) 
+        model=model)
 
     # Extract the initial scenario from the Dungeon Master
     scenario_text = {}
@@ -87,7 +88,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         scenario_text[str(i)]['date'] = datetime.now().isoformat()
         i += 1
         current_char = campaign_data[str(i)]['character']
-        
+
 
     return {
         'num_players': num_players,
@@ -100,7 +101,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         'character_genders': character_genders,
         'character_personalities': character_personalities,
         'player_personalities': player_personalities,
-        'character_sheets': character_sheets, 
+        'character_sheets': character_sheets,
         'character_turns': character_turns,
         'initial_scenario': scenario_text
     }
@@ -123,35 +124,35 @@ def parse_name_descriptions(response_text, names):
     Returns:
         dict: Dictionary mapping names to their descriptions
     """
-    
+
     response_text = response_text.strip()
     personalities_dict = {}
-    
+
     # Strategy 1: Line-by-line parsing (handles line-separated entries)
     lines = [line.strip() for line in response_text.split('\n') if line.strip()]
-    
+
     for line in lines:
         if ':' not in line:
             continue
-            
+
         # Split on first colon only
         parts = line.split(':', 1)
         if len(parts) != 2:
             continue
-            
+
         potential_name = parts[0].strip()
         description = parts[1].strip()
-        
+
         # Clean up potential name (remove markdown formatting, bullets, etc.)
         clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
         clean_name = re.sub(r'\*+', '', clean_name).strip()
-        
+
         # Check if this matches any of our names (case insensitive)
         for name in names:
             if name.lower() == clean_name.lower():
                 personalities_dict[name] = description
                 break
-    
+
     # Strategy 2: Handle comma-separated entries (only if comma appears BEFORE a colon)
     # This catches cases like "name1: desc1, name2: desc2" but not "name1: desc with, comma in it"
     if len(personalities_dict) < len([name for name in names if name != "Dungeon Master"]):
@@ -159,30 +160,30 @@ def parse_name_descriptions(response_text, names):
         # Use regex to find comma-separated entries that each contain name:description
         comma_pattern = r'([^,]+:[^,]*(?:,[^:]*)*?)(?=,\s*\w+\s*:|$)'
         matches = re.findall(comma_pattern, response_text)
-        
+
         for match in matches:
             segment = match.strip()
             if ':' not in segment:
                 continue
-                
+
             parts = segment.split(':', 1)
             if len(parts) != 2:
                 continue
-                
+
             potential_name = parts[0].strip()
             description = parts[1].strip()
-            
+
             # Clean up potential name
             clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
             clean_name = re.sub(r'\*+', '', clean_name).strip()
-            
+
             # Check if this matches any of our names
             for name in names:
                 if name.lower() == clean_name.lower():
                     if name not in personalities_dict:  # Don't overwrite
                         personalities_dict[name] = description
                     break
-    
+
     return personalities_dict
 
 def generate_character_personalities(campaign_data: Dict[str, Any],
@@ -226,7 +227,7 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
     response_text = response.choices[0].message.content
     # Parse the personalities using the general parser
     personalities_dict = parse_name_descriptions(response_text, character_names)
-    
+
     # Convert to list in the same order as character_names
     personalities = []
     for name in character_names:
@@ -284,7 +285,7 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
     response_text = response.choices[0].message.content
     # Parse the personalities using the general parser
     personalities_dict = parse_name_descriptions(response_text, player_names)
-    
+
     # Convert to list in the same order as character_names
     player_personalities = []
     for name in player_names:
@@ -306,7 +307,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
     Returns:
         Dictionary mapping character names to their character sheet dictionaries
     """
-    
+
     prompt = f"""
         You are analyzing a Dungeons & Dragons play-by-post campaign to extract character sheet information.
 
@@ -371,54 +372,54 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
     response_text = response.choices[0].message.content
     print(response_text)
     character_sheets = [None] # start with DM character sheet of none
-    
+
     # Parse response into character sheets
     current_character = None
     current_sheet = {}
-    
+
     for line in response_text.strip().split('\n'):
         line = line.strip()
         if not line:
             continue
-            
+
         # Check if this line starts a new character
-        if any(line.startswith(name + ":") or line.startswith(f"[{name}]:") 
+        if any(line.startswith(name + ":") or line.startswith(f"[{name}]:")
             for name in character_names if name != "Dungeon Master"):            # Save previous character if exists
-                if current_character and current_sheet:
-                    character_sheets.append(current_sheet.copy())
-                
-                # Start new character
-                current_character = line.split(':', 1)[0].strip()
-                current_sheet = {}
-                continue
-        
+            if current_character and current_sheet:
+                character_sheets.append(current_sheet.copy())
+
+            # Start new character
+            current_character = line.split(':', 1)[0].strip()
+            current_sheet = {}
+            continue
+
         # Parse character sheet fields
         if ':' in line and current_character:
             field_name, field_value = line.split(':', 1)
             field_name = field_name.strip()
             field_value = field_value.strip()
-            
+
             # Convert certain fields to appropriate types
-            if field_name in ['Level', 'Strength', 'Dexterity', 'Constitution', 
+            if field_name in ['Level', 'Strength', 'Dexterity', 'Constitution',
                              'Intelligence', 'Wisdom', 'Charisma', 'Armor Class']:
                 try:
                     if field_value.lower() != 'unknown':
                         field_value = int(field_value)
                 except ValueError:
                     pass  # Keep as string if conversion fails
-            
-            elif field_name in ['Saving Throw Proficiencies', 'Skill Proficiencies', 
+
+            elif field_name in ['Saving Throw Proficiencies', 'Skill Proficiencies',
                                'Languages', 'Equipment', 'Spells Known', 'Special Abilities']:
                 # Convert comma-separated lists
                 if field_value.lower() != 'unknown':
                     field_value = [item.strip() for item in field_value.split(',') if item.strip()]
-            
+
             current_sheet[field_name] = field_value
-    
+
     # Don't forget the last character
     if current_character and current_sheet:
         character_sheets.append(current_sheet.copy())
-    
+
     return character_sheets
 
 # ===============================================================
@@ -521,65 +522,12 @@ class CharacterAgent:
         self.player_personality = player_personality,
         self.character_sheet = character_sheet,
         self.model = model
-        
+
         # Validate API key is available for this model
         validate_api_key_for_model(model)
 
         # Initialize memory
         self.memory_summary = f"I am {name}, and I am playing D&D with my fellow adventurers. My personality can be described like this: {personality} "
-
-    def generate_response(self, game_log: str, include_player_personalities) -> str:
-        """
-        Generate character's action/dialogue for current situation.
-        
-        Args:
-            game_log: Game log so far
-            
-        Returns:
-            Character's response/action
-        """
-        player_section = f"""PLAYER IDENTITY:
-            - Username: {self.player_name}
-            - Player Personality: {self.player_personality}
-            """ if include_player_personalities else ""
-
-        player_style_text = f", while also staying to the play style representative of {self.player_name}" if include_player_personalities else ""
-
-        prompt = f"""You are roleplaying in a Dungeons & Dragons play-by-post forum game.
-
-        {player_section}
-
-        CHARACTER IDENTITY:
-        - Character Name: {self.name}
-        - Character Personality: {self.personality}
-        - Character Sheet: {self.character_sheet}
-
-        CURRENT GAME STATE:
-        {game_log}
-
-        INSTRUCTIONS:
-        You are {self.player_name} playing as {self.name}. Respond in character with what {self.name} does or says in this situation.
-
-        Your response should:
-        - Stay true to {self.name}'s personality and abilities{player_style_text}
-        - Be appropriate for the current situation
-        - Include both actions and/or dialogue as needed
-        - Match the posting style typical of play-by-post D&D forums
-
-        {self.name}'s response:"""
-
-        response = litellm.completion(
-            model=self.model,
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            max_tokens=300
-        )
-
-        return response.choices[0].message.content.strip()
-
-
 
 # ===================================================================
 # GAME SESSION CLASS
@@ -601,21 +549,34 @@ class GameSession:
         self.characters = characters
         self.game_log = {}
         self.turn_counter = 0
+        self.history_cache_manager = pc.HistoryCacheManager(
+            cache_update_interval=20)
 
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}
 
-    def execute_turn(self, character_name: str, include_player_personalities=True):
+    def execute_turn(self,
+                     character_name: str,
+                     include_player_personalities=True,
+                     print_cache=False):
         """
         Execute a turn for the specified character.
         
         Args:
             character_name: Name of character taking the turn
+            include_player_personalities: Whether to include player personality info
+            print_cache: Whether to print cache statistics after API call
         """
         character = self.character_lookup[character_name]
 
-        # Generate character response
-        response = character.generate_response(self.game_log, include_player_personalities=include_player_personalities)
+        # Generate character response and manage prompt caching
+        response = pc.create_cached_completion(
+                    character=character,
+                    game_log=self.game_log,
+                    current_turn=self.turn_counter,
+                    history_cache_manager=self.history_cache_manager,
+                    include_player_personalities=include_player_personalities,
+                    print_cache=print_cache)
 
         # Log the event
         self.log_event(character, response)
@@ -654,13 +615,19 @@ class GameSession:
         self.game_log[str(self.turn_counter)] = event
         self.turn_counter += 1
 
-    def run_scenario(self, initial_scenario: str, turn_sequence: List[str], include_player_personalities=True):
+    def run_scenario(self,
+                     initial_scenario: str,
+                     turn_sequence: List[str],
+                     include_player_personalities=True,
+                     print_cache=False):
         """
         Main game loop that iterates through the turn sequence.
         
         Args:
             initial_scenario: Starting scenario description
             turn_sequence: List of character names in turn order
+            include_player_personalities: Whether to include player personality info
+            print_cache: Whether to print cache statistics after each API call
         """
         # Set initial scene
         self.game_log.update(initial_scenario)
@@ -677,7 +644,10 @@ class GameSession:
 
         # Execute turns
         for character_name in turn_sequence:
-            self.execute_turn(character_name, include_player_personalities=include_player_personalities)
+            self.execute_turn(
+                character_name,
+                include_player_personalities=include_player_personalities,
+                print_cache=print_cache)
 
         print("\n" + "=" * 50)
         print("=== SIMULATION COMPLETE ===")
