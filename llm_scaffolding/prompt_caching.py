@@ -507,30 +507,14 @@ def create_cached_completion(character, game_log: Dict, current_turn: int,
             else:
                 print(f"   Content: String (length={len(msg['content'])})")
     
-    # Make API call - use direct Anthropic API for cache support
-    if provider == "anthropic":
-        response = create_anthropic_cached_completion(character, messages, **kwargs)
-        
-        # Print cache statistics if requested
-        if print_cache:
-            print_anthropic_cache_statistics(character.name, current_turn, response)
-        
-        return response.content[0].text.strip()
-    else:
-        # Use LiteLLM for other providers
-        response = litellm.completion(**completion_args)
-        
-        # Print cache statistics if requested
-        if print_cache:
-            print_cache_statistics(character.name, current_turn, response, provider)
-        
-        return response.choices[0].message.content.strip()
+    # Use LiteLLM for all providers with improved message formatting
+    response = litellm.completion(**completion_args)
     
-    # OLD CODE (using LiteLLM for all providers):
-    # response = litellm.completion(**completion_args)
-    # if print_cache:
-    #     print_cache_statistics(character.name, current_turn, response, provider)
-    # return response.choices[0].message.content.strip()
+    # Print cache statistics if requested
+    if print_cache:
+        print_cache_statistics(character.name, current_turn, response, provider)
+    
+    return response.choices[0].message.content.strip()
 
 
 def estimate_token_count(text: str) -> int:
