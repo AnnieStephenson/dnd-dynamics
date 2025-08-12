@@ -46,9 +46,9 @@ def setup_api_keys(api_key_file: Optional[str] = None):
         elif line.startswith('OPENAI_API_KEY='):
             os.environ['OPENAI_API_KEY'] = line.split('=', 1)[1]  
             print("✅ OpenAI API key loaded")
-        elif line.startswith('GOOGLE_API_KEY='):
-            os.environ['GOOGLE_API_KEY'] = line.split('=', 1)[1]
-            print("✅ Google API key loaded")
+        elif line.startswith('GEMINI_API_KEY='):
+            os.environ['GEMINI_API_KEY'] = line.split('=', 1)[1]
+            print("✅ Gemini API key loaded")
 
 def get_model_provider(model: str) -> str:
     """
@@ -87,7 +87,7 @@ def validate_api_key_for_model(model: str):
     key_mapping = {
         'anthropic': 'ANTHROPIC_API_KEY',
         'openai': 'OPENAI_API_KEY', 
-        'google': 'GOOGLE_API_KEY'
+        'google': 'GEMINI_API_KEY'
     }
     
     required_key = key_mapping[provider]

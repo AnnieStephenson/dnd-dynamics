@@ -17,10 +17,12 @@ import sys
 from pathlib import Path
 import numpy as np
 import litellm
+import textwrap
 import re
 
 from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
+from . import DEFAULT_MAX_TOKENS
 from analysis import data_loading as dl
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
@@ -106,6 +108,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         'initial_scenario': scenario_text
     }
 
+
 def parse_name_descriptions(response_text, names):
     """
     Parse name-description pairs from LLM response formats.
@@ -124,12 +127,13 @@ def parse_name_descriptions(response_text, names):
     Returns:
         dict: Dictionary mapping names to their descriptions
     """
-
     response_text = response_text.strip()
     personalities_dict = {}
 
     # Strategy 1: Line-by-line parsing (handles line-separated entries)
-    lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+    lines = [
+        line.strip() for line in response_text.split('\n') if line.strip()
+    ]
 
     for line in lines:
         if ':' not in line:
@@ -155,7 +159,8 @@ def parse_name_descriptions(response_text, names):
 
     # Strategy 2: Handle comma-separated entries (only if comma appears BEFORE a colon)
     # This catches cases like "name1: desc1, name2: desc2" but not "name1: desc with, comma in it"
-    if len(personalities_dict) < len([name for name in names if name != "Dungeon Master"]):
+    if len(personalities_dict) < len(
+        [name for name in names if name != "Dungeon Master"]):
         # Look for patterns where commas separate name:description pairs
         # Use regex to find comma-separated entries that each contain name:description
         comma_pattern = r'([^,]+:[^,]*(?:,[^:]*)*?)(?=,\s*\w+\s*:|$)'
@@ -185,6 +190,7 @@ def parse_name_descriptions(response_text, names):
                     break
 
     return personalities_dict
+
 
 def generate_character_personalities(campaign_data: Dict[str, Any],
                                      character_names: List[str],
@@ -217,16 +223,18 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
         [Character Name]:[Detailed fictional character personality and backstory]
 
         """
-
-    response = litellm.completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
-    )
+    response = litellm.completion(model=model,
+                                  messages=[{
+                                      "role": "user",
+                                      "content": prompt
+                                  }],
+                                  max_tokens=DEFAULT_MAX_TOKENS)
 
     response_text = response.choices[0].message.content
+
     # Parse the personalities using the general parser
-    personalities_dict = parse_name_descriptions(response_text, character_names)
+    personalities_dict = parse_name_descriptions(response_text,
+                                                 character_names)
 
     # Convert to list in the same order as character_names
     personalities = []
@@ -238,9 +246,10 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
 
     return personalities
 
+
 def generate_player_personalities(campaign_data: Dict[str, Any],
-                                     player_names: List[str],
-                                     model: str) -> List[str]:
+                                  player_names: List[str],
+                                  model: str) -> List[str]:
     """
     Query LLM to extract fictional character personalities and backstories.
     """
@@ -267,7 +276,7 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
         Campaign data:
         {json.dumps(campaign_data, indent=2)}
 
-        Characters found:
+        Players found:
         {np.array(player_names)}
 
         For each player, format your response like this on a single line:
@@ -276,11 +285,12 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
 
         """
 
-    response = litellm.completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
-    )
+    response = litellm.completion(model=model,
+                                  messages=[{
+                                      "role": "user",
+                                      "content": prompt
+                                  }],
+                                  max_tokens=DEFAULT_MAX_TOKENS)
 
     response_text = response.choices[0].message.content
     # Parse the personalities using the general parser
@@ -366,11 +376,10 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
     response = litellm.completion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=3000
+        max_tokens=DEFAULT_MAX_TOKENS
     )
 
     response_text = response.choices[0].message.content
-    print(response_text)
     character_sheets = [None] # start with DM character sheet of none
 
     # Parse response into character sheets
@@ -539,18 +548,26 @@ class GameSession:
     Main game session manager that orchestrates the D&D simulation.
     """
 
-    def __init__(self, characters: List[CharacterAgent]):
+    def __init__(self,
+                 characters: List[CharacterAgent],
+                 campaign_name: str,
+                 cache_update_interval: int = 20):
         """
         Initialize game session.
         
         Args:
             characters: List of CharacterAgent objects
+            campaign_name: Name of the human campaign to load statistics from
+            cache_update_interval: How many turns before updating history cache (default: 20)
         """
         self.characters = characters
         self.game_log = {}
         self.turn_counter = 0
         self.history_cache_manager = pc.HistoryCacheManager(
-            cache_update_interval=20)
+            cache_update_interval=cache_update_interval)
+
+        # Generate system cache once at initialization with campaign stats
+        self.system_cache = pc.generate_system_cache(campaign_name)
 
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}
@@ -571,18 +588,19 @@ class GameSession:
 
         # Generate character response and manage prompt caching
         response = pc.create_cached_completion(
-                    character=character,
-                    game_log=self.game_log,
-                    current_turn=self.turn_counter,
-                    history_cache_manager=self.history_cache_manager,
-                    include_player_personalities=include_player_personalities,
-                    print_cache=print_cache)
+            character=character,
+            game_log=self.game_log,
+            current_turn=self.turn_counter,
+            history_cache_manager=self.history_cache_manager,
+            system_cache=self.system_cache,
+            include_player_personalities=include_player_personalities,
+            print_cache=print_cache)
 
         # Log the event
         self.log_event(character, response)
 
         # Print the response
-        print(f"\n{character_name}: {response}")
+        print(textwrap.fill(f"\n{character_name}: {response}", width=170))
 
     def log_event(self, character: CharacterAgent, action_text: str):
         """
@@ -610,8 +628,7 @@ class GameSession:
             event['race'] = character.race
             event['gender'] = character.gender
             event['class'] = character.dnd_class
-        print('turn counter: ' + str(self.turn_counter))
-        print('\n')
+        print('Turn counter: ' + str(self.turn_counter))
         self.game_log[str(self.turn_counter)] = event
         self.turn_counter += 1
 
@@ -631,12 +648,19 @@ class GameSession:
         """
         # Set initial scene
         self.game_log.update(initial_scenario)
-        print(f"=== INITIAL GAME LOG ===")
-        print(self.game_log)
 
         self.turn_counter = int(max(self.game_log.keys(), key=int)) + 1
-        print(self.turn_counter)
-        print(f"=== D&D SIMULATION STARTING ===")
+
+        # Print the system prompt
+        print(f"=== SYSTEM PROMPT ===")
+        print(textwrap.fill(self.system_cache, width=170))
+        
+        # Print the initial DM message in readable format
+        initial_context = self.history_cache_manager.get_recent_context(
+            self.turn_counter, self.game_log)
+        print(f"\n=== INITIAL SCENARIO ===")
+        print(textwrap.fill(initial_context, width=170))
+        print(f"\n=== D&D SIMULATION STARTING ===")
 
         print(f"Characters: {[char.name for char in self.characters]}")
         print(f"Total turns: {len(turn_sequence)}")
@@ -644,6 +668,7 @@ class GameSession:
 
         # Execute turns
         for character_name in turn_sequence:
+            print("-" * 50)
             self.execute_turn(
                 character_name,
                 include_player_personalities=include_player_personalities,
