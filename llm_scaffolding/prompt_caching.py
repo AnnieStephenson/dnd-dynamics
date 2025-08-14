@@ -25,13 +25,14 @@ from analysis import data_loading as dl
 from analysis import basic_metrics as basic
 
 
-def generate_system_cache(campaign_name: str) -> str:
+def generate_system_cache(campaign_name: str, scratchpad: bool = False) -> str:
     """
     Generate the D&D system prompt with campaign-specific post length statistics.
     This explains the game context and response format.
     
     Args:
         campaign_name: Name of the human campaign to load statistics from
+        scratchpad: Whether to include scratchpad reasoning instructions
     
     Returns:
         D&D system prompt text with campaign-specific response length guidelines
@@ -64,12 +65,34 @@ RESPONSE GUIDELINES:
 - Include both narrative description and character dialogue as needed
 
 RESPONSE LENGTH GUIDELINES:
-Your response length should match the typical post lengths in the campaign, 
+Your response length should follow the distribution of post lengths in the campaign, 
 but should be an appropriate length based on the narrative context. In this campaign, 
 the median post length is {median:.1f} words, the mean is {mean:.1f} words, and the standard deviation is {standard_dev:.1f} words. 
 Most campaigns are have a post length distribution that is right skewed with a mode smaller than the mean and median, and have a somewhat lognormal tail, 
 meaning that longer posts are possible, but are relatively rare. The typical (mode) post length is therefore likely less
-than {median:.1f} words"""
+than {median:.1f} words. Sometimes, very short responses of just a handful of words are fine. Rarely, long responses of over 400 words might be appropriate."""
+
+    # Add scratchpad instructions if enabled
+    if scratchpad:
+        scratchpad_instructions = """
+
+REASONING PROCESS:
+Before generating your character's response, you should think through your reasoning process. Consider:
+- What is the current situation and what just happened?
+- How would you feel about this situation given your personality?
+- What actions or dialogue would be most fitting?
+- Importantly, what would be an appropriate response length considering both the typical post lengths for this campaign, and considering the context?
+
+FORMAT YOUR RESPONSE AS FOLLOWS:
+First, work through your reasoning in a "thinking" section, then provide your final character response.
+
+Reasoning: [Your analysis of the situation, character motivations, and response planning]
+
+Final response: [Your actual character's actions and dialogue - this should be what gets posted to the forum]
+
+IMPORTANT: Only the "Final response:" portion will be visible to other players and added to the game history."""
+
+        system_prompt += scratchpad_instructions
 
     return system_prompt
 
@@ -487,7 +510,7 @@ class HistoryCacheManager:
         return generate_history_cache(game_log, start_turn, current_turn - 1)
 
 
-def pre_cache_static_content(characters: List, system_cache: str, 
+def pre_cache_static_content(characters: List, system_cache: str,
                            include_player_personalities: bool = True):
     """
     Pre-cache system prompt and all character contexts at simulation start.
@@ -502,15 +525,15 @@ def pre_cache_static_content(characters: List, system_cache: str,
     if characters:
         first_character = characters[0]
         provider = get_model_provider(first_character.model)
-        
+
         if provider == "anthropic":
             # Create minimal character cache for the first character
             character_cache = generate_character_cache(first_character, include_player_personalities)
-            
+
             # Build message with both system and character caches
             messages = [
                 {
-                    "role": "system", 
+                    "role": "system",
                     "content": [
                         {
                             "type": "text",
@@ -523,7 +546,7 @@ def pre_cache_static_content(characters: List, system_cache: str,
                     "role": "user",
                     "content": [
                         {
-                            "type": "text", 
+                            "type": "text",
                             "text": f"CHARACTER CONTEXT:\n{character_cache}",
                             "cache_control": {"type": "ephemeral"}
                         },
@@ -534,32 +557,32 @@ def pre_cache_static_content(characters: List, system_cache: str,
                     ]
                 }
             ]
-            
+
             # Make a minimal completion to create the caches
             try:
                 import litellm
                 response = litellm.completion(
                     model=first_character.model,
-                    messages=messages, 
+                    messages=messages,
                     max_tokens=10,
                     temperature=DEFAULT_TEMPERATURE
                 )
                 print(f"✅ Pre-cached system prompt and character context for {first_character.name}")
             except Exception as e:
                 print(f"⚠️  Pre-caching failed: {e}")
-        
+
         # Pre-cache remaining character contexts
         for character in characters[1:]:
             if get_model_provider(character.model) == "anthropic":
                 character_cache = generate_character_cache(character, include_player_personalities)
-                
+
                 messages = [
                     {
                         "role": "system",
                         "content": system_cache  # Will use existing cache
                     },
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": [
                             {
                                 "type": "text",
@@ -573,7 +596,7 @@ def pre_cache_static_content(characters: List, system_cache: str,
                         ]
                     }
                 ]
-                
+
                 try:
                     response = litellm.completion(
                         model=character.model,

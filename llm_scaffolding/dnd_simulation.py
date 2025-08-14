@@ -259,17 +259,18 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
         You are analyzing the behavior and writing of players in a Dungeons & Dragons play-by-post campaign.
 
         For each player, generate a detailed psychological profile, inferred from their writing style, gameplay decisions, social behavior, and tone of voice throughout the game.
-        For this description, we are not interested in traits of the character being played, but in the human player who is roleplaying that character. 
+        Pay particular attention to details revelead in their out-of-character posts, as these should reaveal more about the human player. For this description, we are not interested 
+        in traits of the character being played, but in the human player who is roleplaying that character. 
         Be sure to separate the human player's personality from that of their character. 
 
         You may include:
+        - Possible age range, gender identity, or background
+        - Possible family or personal life details
         - Personality traits (e.g., introverted, playful, meticulous)
         - Writing style (e.g., descriptive, terse, humorous, lyrical)
-        - Possible age range, gender identity (if suggested), or background
         - Hobbies, interests, or career hints
         - Political or ethical leanings (if evidenced)
         - Social tendencies (e.g., leadership, collaboration, conflict-avoidance)
-        - Possible family or personal life details
         - Any other relevant psychological insights
 
         Only include details that are **reasonably supported** by the gameplay data — be thoughtful and cautious, but specific.
@@ -554,7 +555,8 @@ class GameSession:
     def __init__(self,
                  characters: List[CharacterAgent],
                  campaign_name: str,
-                 cache_update_interval: int = 20):
+                 cache_update_interval: int = 20,
+                 scratchpad: bool = False):
         """
         Initialize game session.
         
@@ -562,15 +564,17 @@ class GameSession:
             characters: List of CharacterAgent objects
             campaign_name: Name of the human campaign to load statistics from
             cache_update_interval: How many turns before updating history cache (default: 20)
+            scratchpad: Whether to enable scratchpad reasoning for character responses
         """
         self.characters = characters
         self.game_log = {}
         self.turn_counter = 0
+        self.scratchpad = scratchpad
         self.history_cache_manager = pc.HistoryCacheManager(
             cache_update_interval=cache_update_interval)
 
         # Generate system cache once at initialization with campaign stats
-        self.system_cache = pc.generate_system_cache(campaign_name)
+        self.system_cache = pc.generate_system_cache(campaign_name, scratchpad=scratchpad)
 
         # Pre-cache system prompt and all character contexts
         print("Pre-caching static content...")
@@ -578,6 +582,44 @@ class GameSession:
 
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}
+
+    def _parse_scratchpad_response(self, raw_response: str) -> str:
+        """
+        Parse scratchpad response to extract only the final response part.
+        
+        Args:
+            raw_response: Full response including reasoning and final response
+            
+        Returns:
+            Only the final response portion, or full response if no "Final response:" found
+        """
+        if not self.scratchpad:
+            return raw_response
+
+        # Look for "Final response:" marker (case insensitive)
+        lines = raw_response.split('\n')
+        final_response_lines = []
+        found_final_response = False
+
+        for line in lines:
+            if 'final response:' in line.lower():
+                found_final_response = True
+                # Include everything after the colon on this line
+                colon_pos = line.lower().find('final response:')
+                remainder = line[colon_pos + len('final response:'):].strip()
+                if remainder:
+                    final_response_lines.append(remainder)
+                continue
+
+            if found_final_response:
+                final_response_lines.append(line)
+
+        if final_response_lines:
+            return '\n'.join(final_response_lines).strip()
+        else:
+            # Fallback: if no "Final response:" found, return the original
+            print(f"⚠️  Warning: No 'Final response:' found in scratchpad mode. Using full response.")
+            return raw_response
 
     def execute_turn(self,
                      character_name: str,
@@ -594,7 +636,7 @@ class GameSession:
         character = self.character_lookup[character_name]
 
         # Generate character response and manage prompt caching
-        response = pc.create_cached_completion(
+        raw_response = pc.create_cached_completion(
             character=character,
             game_log=self.game_log,
             current_turn=self.turn_counter,
@@ -603,11 +645,22 @@ class GameSession:
             include_player_personalities=include_player_personalities,
             print_cache=print_cache)
 
-        # Log the event
-        self.log_event(character, response)
+        # Parse scratchpad response if enabled
+        final_response = self._parse_scratchpad_response(raw_response)
 
-        # Print the response
-        print(textwrap.fill(f"\n{character_name}: {response}", width=170))
+        # Print the response(s)
+        if self.scratchpad and raw_response != final_response:
+            # Show both reasoning and final response
+            print(f"\n=== {character_name} REASONING ===")
+            print(textwrap.fill(raw_response, width=170))
+            print(f"\n=== {character_name} FINAL RESPONSE ===")
+            print(textwrap.fill(final_response, width=170))
+        else:
+            # Regular mode - just show the response
+            print(textwrap.fill(f"\n{character_name}: {final_response}", width=170))
+
+        # Log the event (only the final response)
+        self.log_event(character, final_response)
 
     def log_event(self, character: CharacterAgent, action_text: str):
         """
@@ -661,7 +714,7 @@ class GameSession:
         # Print the system prompt
         print(f"=== SYSTEM PROMPT ===")
         print(textwrap.fill(self.system_cache, width=170))
-        
+
         # Print the initial DM message in readable format
         initial_context = self.history_cache_manager.get_recent_context(
             self.turn_counter, self.game_log)
