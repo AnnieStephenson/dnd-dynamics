@@ -22,7 +22,7 @@ import re
 
 from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
-from . import DEFAULT_MAX_TOKENS
+from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from analysis import data_loading as dl
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
@@ -228,7 +228,8 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
                                       "role": "user",
                                       "content": prompt
                                   }],
-                                  max_tokens=DEFAULT_MAX_TOKENS)
+                                  max_tokens=DEFAULT_MAX_TOKENS,
+                                  temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
 
@@ -290,7 +291,8 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
                                       "role": "user",
                                       "content": prompt
                                   }],
-                                  max_tokens=DEFAULT_MAX_TOKENS)
+                                  max_tokens=DEFAULT_MAX_TOKENS,
+                                  temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
     # Parse the personalities using the general parser
@@ -376,7 +378,8 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
     response = litellm.completion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=DEFAULT_MAX_TOKENS
+        max_tokens=DEFAULT_MAX_TOKENS,
+        temperature=DEFAULT_TEMPERATURE
     )
 
     response_text = response.choices[0].message.content
@@ -568,6 +571,10 @@ class GameSession:
 
         # Generate system cache once at initialization with campaign stats
         self.system_cache = pc.generate_system_cache(campaign_name)
+
+        # Pre-cache system prompt and all character contexts
+        print("Pre-caching static content...")
+        pc.pre_cache_static_content(characters, self.system_cache)
 
         # Create character lookup
         self.character_lookup = {char.name: char for char in characters}

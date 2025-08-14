@@ -20,7 +20,7 @@ import litellm
 import anthropic
 import os
 from .api_config import validate_api_key_for_model, get_model_provider
-from . import DEFAULT_MAX_TOKENS
+from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from analysis import data_loading as dl
 from analysis import basic_metrics as basic
 
@@ -86,26 +86,26 @@ def generate_character_cache(character, include_player_personalities: bool = Tru
         Character-specific prompt text
     """
     player_section = f"""
-PLAYER IDENTITY:
-- Username: {character.player_name}
-- Player Personality: {character.player_personality}
-""" if include_player_personalities else ""
+                    PLAYER IDENTITY:
+                    - Username: {character.player_name}
+                    - Player Personality: {character.player_personality}
+                    """ if include_player_personalities else ""
 
     player_style_text = f", while also staying true to the play style representative of {character.player_name}" if include_player_personalities else ""
 
     character_context = f"""{player_section}
-CHARACTER IDENTITY:
-- Character Name: {character.name}
-- Character Race: {character.race}
-- Character Class: {character.dnd_class}
-- Character Gender: {character.gender}
-- Character Personality: {character.personality}
-- Character Sheet: {json.dumps(character.character_sheet, indent=2)}
+                        CHARACTER IDENTITY:
+                        - Character Name: {character.name}
+                        - Character Race: {character.race}
+                        - Character Class: {character.dnd_class}
+                        - Character Gender: {character.gender}
+                        - Character Personality: {character.personality}
+                        - Character Sheet: {json.dumps(character.character_sheet, indent=2)}
 
-ROLEPLAY INSTRUCTIONS:
-You are {character.player_name} playing as {character.name}. Respond in character with what {character.name} does or says in the current situation{player_style_text}.
+                        ROLEPLAY INSTRUCTIONS:
+                        You are {character.player_name} playing as {character.name}. Respond in character with what {character.name} does or says in the current situation{player_style_text}.
 
-Your character's response should reflect their personality, abilities, and the current game state."""
+                        Your character's response should reflect their personality, abilities, and the current game state."""
 
     return character_context
 
@@ -161,20 +161,24 @@ def build_anthropic_messages(system_cache: str, character_cache: str,
                            history_cache: str, recent_context: str,
                            current_situation: str) -> List[Dict]:
     """
-    Build messages array with Anthropic's cache_control format.
-    Restructured so character info doesn't invalidate history cache.
+    Build messages array with Anthropic's cache_control format with multiple cache breakpoints.
     
-    Cache hierarchy: System Prompt → History → Character Info → Recent Events → Current Situation
+    Cache hierarchy with breakpoints:
+    1. System Prompt (cached) - Static D&D system prompt
+    2. History (cached) - Historical game events, shared across characters  
+    3. Character Context (cached) - Character-specific info, cached per character
+    4. Recent Context (not cached) - Recent game events, changes every turn
+    5. Current Situation (not cached) - Current turn prompt, changes every turn
     
     Args:
-        system_cache: Static D&D system prompt (cached)
-        character_cache: Character-specific context (not cached - changes per character)
+        system_cache: Static D&D system prompt (pre-cached)
+        character_cache: Character-specific context (pre-cached)
         history_cache: Historical game events (cached)
         recent_context: Recent game events (not cached)
         current_situation: Current turn prompt (not cached)
         
     Returns:
-        Messages array with cache_control parameters
+        Messages array that uses pre-cached content
     """
     # System message with only the static D&D prompt (cached)
     messages = [
@@ -190,7 +194,7 @@ def build_anthropic_messages(system_cache: str, character_cache: str,
         }
     ]
 
-    # Build user message content in optimal order for caching
+    # Build user message content with multiple cache breakpoints
     user_content = []
 
     # Add cached history if available (cached - shared across characters)
@@ -201,18 +205,18 @@ def build_anthropic_messages(system_cache: str, character_cache: str,
             "cache_control": {"type": "ephemeral"}
         })
 
-    # Add recent context first (not cached, but better for OpenAI prefix caching)
+    # Add character context (will use pre-cached content)
+    user_content.append({
+        "type": "text",
+        "text": f"CHARACTER CONTEXT:\n{character_cache}"
+    })
+
+    # Add recent context (not cached - changes every turn)
     if recent_context:
         user_content.append({
             "type": "text",
             "text": f"RECENT GAME EVENTS:\n{recent_context}"
         })
-
-    # Add character context (not cached - changes per character, put after recent events)
-    user_content.append({
-        "type": "text",
-        "text": f"CHARACTER CONTEXT:\n{character_cache}"
-    })
 
     # Add current situation (not cached)
     user_content.append({
@@ -369,8 +373,8 @@ def build_cached_messages(provider: str, system_cache: str, character_cache: str
     
     Args:
         provider: Provider name ("anthropic", "openai", "google")
-        system_cache: Static D&D system prompt
-        character_cache: Character-specific context
+        system_cache: Static D&D system prompt (pre-cached)
+        character_cache: Character-specific context (pre-cached)
         history_cache: Historical game events (cached when appropriate)
         recent_context: Recent game events (dynamic)  
         current_situation: Current turn prompt (dynamic)
@@ -483,6 +487,105 @@ class HistoryCacheManager:
         return generate_history_cache(game_log, start_turn, current_turn - 1)
 
 
+def pre_cache_static_content(characters: List, system_cache: str, 
+                           include_player_personalities: bool = True):
+    """
+    Pre-cache system prompt and all character contexts at simulation start.
+    This creates caches for all static content that won't change during the game.
+    
+    Args:
+        characters: List of CharacterAgent objects
+        system_cache: System prompt text
+        include_player_personalities: Whether to include player personality info
+    """
+    # Cache system prompt and first character context with a minimal completion
+    if characters:
+        first_character = characters[0]
+        provider = get_model_provider(first_character.model)
+        
+        if provider == "anthropic":
+            # Create minimal character cache for the first character
+            character_cache = generate_character_cache(first_character, include_player_personalities)
+            
+            # Build message with both system and character caches
+            messages = [
+                {
+                    "role": "system", 
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": system_cache,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text", 
+                            "text": f"CHARACTER CONTEXT:\n{character_cache}",
+                            "cache_control": {"type": "ephemeral"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "Please respond with just 'Ready' to confirm you understand the context."
+                        }
+                    ]
+                }
+            ]
+            
+            # Make a minimal completion to create the caches
+            try:
+                import litellm
+                response = litellm.completion(
+                    model=first_character.model,
+                    messages=messages, 
+                    max_tokens=10,
+                    temperature=DEFAULT_TEMPERATURE
+                )
+                print(f"✅ Pre-cached system prompt and character context for {first_character.name}")
+            except Exception as e:
+                print(f"⚠️  Pre-caching failed: {e}")
+        
+        # Pre-cache remaining character contexts
+        for character in characters[1:]:
+            if get_model_provider(character.model) == "anthropic":
+                character_cache = generate_character_cache(character, include_player_personalities)
+                
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_cache  # Will use existing cache
+                    },
+                    {
+                        "role": "user", 
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"CHARACTER CONTEXT:\n{character_cache}",
+                                "cache_control": {"type": "ephemeral"}
+                            },
+                            {
+                                "type": "text",
+                                "text": "Please respond with just 'Ready' to confirm you understand the context."
+                            }
+                        ]
+                    }
+                ]
+                
+                try:
+                    response = litellm.completion(
+                        model=character.model,
+                        messages=messages,
+                        max_tokens=10,
+                        temperature=DEFAULT_TEMPERATURE
+                    )
+                    print(f"✅ Pre-cached character context for {character.name}")
+                except Exception as e:
+                    print(f"⚠️  Pre-caching failed for {character.name}: {e}")
+
+
 def create_cached_completion(character,
                              game_log: Dict,
                              current_turn: int,
@@ -535,6 +638,7 @@ def create_cached_completion(character,
         "model": character.model,
         "messages": messages,
         "max_tokens": DEFAULT_MAX_TOKENS,
+        "temperature": DEFAULT_TEMPERATURE,
         **kwargs
     }
 
