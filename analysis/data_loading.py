@@ -31,7 +31,8 @@ import json
 
 def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[int] = None,
     show_progress: bool = True,
-    return_json: bool = False
+    return_json: bool = False,
+    messages_per_session: int = 5
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
     Load and process campaigns from various sources.
@@ -43,6 +44,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         max_campaigns: Maximum number of campaigns to load (None for all)
         show_progress: Whether to show progress indicators
         return_json: If True, return both DataFrames and original JSON data
+        messages_per_session: Number of messages per session for creating session_id column
         
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
@@ -53,7 +55,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
     # Handle different source types
     if isinstance(source, list):
         # Multiple campaign names - search in standard directories
-        return _load_campaigns_by_names(source, module_dir, return_json)
+        return _load_campaigns_by_names(source, module_dir, return_json, messages_per_session)
     
     elif isinstance(source, (str, Path)):
         source_str = str(source)
@@ -75,20 +77,20 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
                     campaigns_dir = relative_path
                 else:
                     # Treat as single campaign name
-                    result = _load_campaigns_by_names([source_str], module_dir, return_json)
+                    result = _load_campaigns_by_names([source_str], module_dir, return_json, messages_per_session)
                     if return_json:
                         return result
                     else:
                         return result
         
         # Load from directory path
-        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json)
+        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session)
     
     else:
         raise ValueError(f"Unsupported source type: {type(source)}")
 
 
-def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool):
+def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool, messages_per_session: int):
     """Load campaigns by searching for specific names in standard directories."""
     search_dirs = [
         module_dir / 'data/raw-human-games/individual_campaigns/',
@@ -112,7 +114,7 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
                 single_campaign_data = {campaign_name: campaign_data}
                 
                 # Load using helper function
-                df = _load_dnd_data(single_campaign_data)
+                df = _load_dnd_data(single_campaign_data, messages_per_session)
                 
                 if len(df) > 0:
                     campaign_dataframes[campaign_name] = df
@@ -127,7 +129,7 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
 
 
 def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[int], 
-                                 show_progress: bool, return_json: bool):
+                                 show_progress: bool, return_json: bool, messages_per_session: int):
     """Load campaigns from a directory path."""
     # Get sorted list of campaign files
     campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
@@ -167,7 +169,7 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
         single_campaign_data = {campaign_id: campaign_data}
 
         # Load using existing function
-        df = _load_dnd_data(single_campaign_data)
+        df = _load_dnd_data(single_campaign_data, messages_per_session)
 
         # Only keep non-empty campaigns
         if len(df) > 0:
@@ -194,12 +196,13 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
 # ===================================================================
 
 
-def _load_dnd_data(json_data: Dict) -> pd.DataFrame:
+def _load_dnd_data(json_data: Dict, messages_per_session: int = 5) -> pd.DataFrame:
     """
     Convert nested D&D JSON data into a clean DataFrame with label-aware processing.
     
     Args:
         json_data: Dictionary containing campaign data
+        messages_per_session: Number of messages per session for creating session_id column
         
     Returns:
         pd.DataFrame: Clean DataFrame with one row per message, including label-separated text
@@ -325,7 +328,10 @@ def _load_dnd_data(json_data: Dict) -> pd.DataFrame:
     df['has_dice_roll'] = df.apply(_detect_dice_rolls, axis=1)
     df['message_type'] = df.apply(_classify_message_type, axis=1)
     df['primary_label'] = df.apply(_determine_primary_label, axis=1)
-
+    
+    # Add session_id column based on fixed message blocks
+    df['session_id'] = _create_block_sessions(df, messages_per_session)
+    
     return df
 
 
@@ -411,6 +417,32 @@ def _create_sessions_from_dates(df: pd.DataFrame,
     session_ids = session_breaks.cumsum()
 
     return session_ids
+
+def _create_block_sessions(df: pd.DataFrame, messages_per_session: int = 5) -> pd.Series:
+    """
+    Create session IDs based on fixed blocks of messages.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Campaign DataFrame
+    messages_per_session : int
+        Number of messages per session block
+        
+    Returns
+    -------
+    pd.Series
+        Session IDs (e.g., 'session_1', 'session_2', etc.)
+    """
+    num_messages = len(df)
+    session_ids = []
+    
+    for i in range(num_messages):
+        session_num = i // messages_per_session + 1
+        session_ids.append(f"session_{session_num}")
+    
+    return pd.Series(session_ids, index=df.index)
+
 
 # ===================================================================
 # MULTI-CAMPAIGN Loading
