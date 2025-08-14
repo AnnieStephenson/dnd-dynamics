@@ -259,12 +259,6 @@ def session_novelty(df: pd.DataFrame,
     if embeddings is None:
         embeddings = get_embeddings(df)
 
-    # If no session column, create one based on date gaps
-    if session_col not in df.columns:
-        print(f"No {session_col} column found. Creating sessions based on date gaps...")
-        df = df.copy()
-        df['session_id'] = dl._create_sessions_from_dates(df)
-        session_col = 'session_id'
 
     session_stats = []
 
