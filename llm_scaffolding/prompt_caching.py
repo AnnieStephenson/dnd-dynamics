@@ -49,7 +49,8 @@ def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
             error_str = str(e).lower()
             is_retryable = any(keyword in error_str for keyword in [
                 '502', 'bad gateway', 'service unavailable', '503', 
-                'timeout', 'connection error', 'server error', '500'
+                'timeout', 'connection error', 'server error', '500',
+                '529', 'overloaded', 'overloaded_error', 'rate limit'
             ])
             
             if is_retryable and attempt < max_retries - 1:
@@ -96,6 +97,10 @@ GAME CONTEXT:
 - Players should respond in character, matching typical play-by-post D&D forum style
 - Responses should include both actions and dialogue as appropriate for the situation
 
+CRITICAL TURN RESTRICTIONS:  
+- You are generating EXACTLY ONE character turn for your specific character only 
+- Do NOT generate responses for other characters
+
 RESPONSE GUIDELINES:
 - Stay true to your character's personality, abilities, and background
 - Consider the current situation and respond appropriately
@@ -128,7 +133,9 @@ Reasoning: [Your analysis of the situation, character motivations, and response 
 
 Final response: [Your actual character's actions and dialogue - this should be what gets posted to the forum]
 
-IMPORTANT: Only the "Final response:" portion will be visible to other players and added to the game history."""
+IMPORTANT: 
+- You MUST include "Final response:" (exactly this text) before your character's actual response
+- Only the "Final response:" portion will be visible to other players and added to the game history."""
 
         system_prompt += scratchpad_instructions
 
@@ -215,7 +222,7 @@ def format_current_situation(character_name: str) -> str:
     Returns:
         Current situation prompt
     """
-    return f"CURRENT SITUATION:\nIt is now your turn. What does {character_name} do or say?"
+    return f"CURRENT SITUATION:\nIt is now {character_name}'s turn. Generate {character_name}'s single response only."
 
 
 def build_anthropic_messages(system_cache: str, character_cache: str,

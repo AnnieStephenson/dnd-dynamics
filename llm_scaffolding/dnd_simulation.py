@@ -650,7 +650,8 @@ class GameSession:
     def execute_turn(self,
                      character_name: str,
                      include_player_personalities=True,
-                     print_cache=False):
+                     print_cache=False,
+                     max_format_retries=2):
         """
         Execute a turn for the specified character.
         
@@ -658,21 +659,37 @@ class GameSession:
             character_name: Name of character taking the turn
             include_player_personalities: Whether to include player personality info
             print_cache: Whether to print cache statistics after API call
+            max_format_retries: Maximum retries for scratchpad formatting failures
         """
         character = self.character_lookup[character_name]
+        
+        for format_attempt in range(max_format_retries + 1):
+            try:
+                # Generate character response and manage prompt caching
+                raw_response = pc.create_cached_completion(
+                    character=character,
+                    game_log=self.game_log,
+                    current_turn=self.turn_counter,
+                    history_cache_manager=self.history_cache_manager,
+                    system_cache=self.system_cache,
+                    include_player_personalities=include_player_personalities,
+                    print_cache=print_cache)
 
-        # Generate character response and manage prompt caching
-        raw_response = pc.create_cached_completion(
-            character=character,
-            game_log=self.game_log,
-            current_turn=self.turn_counter,
-            history_cache_manager=self.history_cache_manager,
-            system_cache=self.system_cache,
-            include_player_personalities=include_player_personalities,
-            print_cache=print_cache)
-
-        # Parse scratchpad response if enabled
-        final_response = self._parse_scratchpad_response(raw_response)
+                # Parse scratchpad response if enabled
+                final_response = self._parse_scratchpad_response(raw_response)
+                
+                # Success! Break out of retry loop
+                break
+                
+            except ValueError as e:
+                # Check if this is a scratchpad parsing error
+                if "SCRATCHPAD PARSING ERROR" in str(e) and format_attempt < max_format_retries:
+                    print(f"⚠️  Scratchpad formatting error on attempt {format_attempt + 1}/{max_format_retries + 1}")
+                    print(f"🔄 Retrying turn for {character_name}...")
+                    continue
+                else:
+                    # Either not a scratchpad error, or we've exhausted retries
+                    raise e
 
         # Print the response(s)
         if self.scratchpad and raw_response != final_response:
