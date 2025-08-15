@@ -23,6 +23,7 @@ import re
 from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
 from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+from .prompt_caching import retry_llm_call
 from analysis import data_loading as dl
 # ===================================================================
 # CAMPAIGN PARAMETER EXTRACTION
@@ -223,13 +224,14 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
         [Character Name]:[Detailed fictional character personality and backstory]
 
         """
-    response = litellm.completion(model=model,
-                                  messages=[{
-                                      "role": "user",
-                                      "content": prompt
-                                  }],
-                                  max_tokens=DEFAULT_MAX_TOKENS,
-                                  temperature=DEFAULT_TEMPERATURE)
+    response = retry_llm_call(litellm.completion,
+                             model=model,
+                             messages=[{
+                                 "role": "user",
+                                 "content": prompt
+                             }],
+                             max_tokens=DEFAULT_MAX_TOKENS,
+                             temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
 
@@ -287,15 +289,17 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
 
         """
 
-    response = litellm.completion(model=model,
-                                  messages=[{
-                                      "role": "user",
-                                      "content": prompt
-                                  }],
-                                  max_tokens=DEFAULT_MAX_TOKENS,
-                                  temperature=DEFAULT_TEMPERATURE)
+    response = retry_llm_call(litellm.completion,
+                             model=model,
+                             messages=[{
+                                 "role": "user",
+                                 "content": prompt
+                             }],
+                             max_tokens=DEFAULT_MAX_TOKENS,
+                             temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
+ 
     # Parse the personalities using the general parser
     personalities_dict = parse_name_descriptions(response_text, player_names)
 
@@ -376,7 +380,8 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
         Base ability scores on typical arrays (15,14,13,12,10,8) adjusted for race and class.
         """
 
-    response = litellm.completion(
+    response = retry_llm_call(
+        litellm.completion,
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=DEFAULT_MAX_TOKENS,
@@ -591,35 +596,56 @@ class GameSession:
             raw_response: Full response including reasoning and final response
             
         Returns:
-            Only the final response portion, or full response if no "Final response:" found
+            Only the final response portion
+            
+        Raises:
+            ValueError: If no "Final response:" marker found in scratchpad mode
         """
         if not self.scratchpad:
             return raw_response
 
-        # Look for "Final response:" marker (case insensitive)
+        # Look for "Final response:" marker with flexible formatting (case insensitive)
         lines = raw_response.split('\n')
         final_response_lines = []
         found_final_response = False
 
         for line in lines:
-            if 'final response:' in line.lower():
+            # Clean line for pattern matching (remove markdown formatting)
+            clean_line = line.lower().strip()
+            # Remove markdown formatting: **text** -> text, *text* -> text
+            clean_line = clean_line.replace('**', '').replace('*', '')
+            
+            if 'final response:' in clean_line:
                 found_final_response = True
-                # Include everything after the colon on this line
-                colon_pos = line.lower().find('final response:')
-                remainder = line[colon_pos + len('final response:'):].strip()
-                if remainder:
-                    final_response_lines.append(remainder)
+                # Find the colon position in the original (uncleaned) line
+                original_lower = line.lower()
+                colon_positions = []
+                
+                # Look for colon after "final response" with optional markdown
+                for i, char in enumerate(original_lower):
+                    if char == ':':
+                        # Check if this colon comes after "final response" pattern
+                        text_before_colon = original_lower[:i].replace('**', '').replace('*', '').strip()
+                        if text_before_colon.endswith('final response'):
+                            colon_positions.append(i)
+                
+                if colon_positions:
+                    colon_pos = colon_positions[-1]  # Use the last colon found
+                    remainder = line[colon_pos + 1:].strip()
+                    if remainder:
+                        final_response_lines.append(remainder)
                 continue
-
+            
             if found_final_response:
                 final_response_lines.append(line)
 
         if final_response_lines:
             return '\n'.join(final_response_lines).strip()
         else:
-            # Fallback: if no "Final response:" found, return the original
-            print(f"⚠️  Warning: No 'Final response:' found in scratchpad mode. Using full response.")
-            return raw_response
+            # Error instead of fallback - stop execution
+            raise ValueError(f"❌ SCRATCHPAD PARSING ERROR: No 'Final response:' marker found in character response.\n"
+                           f"Expected formats: 'Final response:', '**Final response**:', '*Final response*:'\n"
+                           f"Raw response preview: {raw_response[:200]}...")
 
     def execute_turn(self,
                      character_name: str,

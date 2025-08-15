@@ -19,10 +19,48 @@ from datetime import datetime
 import litellm
 import anthropic
 import os
+import time
 from .api_config import validate_api_key_for_model, get_model_provider
 from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from analysis import data_loading as dl
 from analysis import basic_metrics as basic
+
+
+def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
+    """
+    Retry wrapper for LLM API calls with exponential backoff.
+    
+    Args:
+        func: Function to retry (e.g., litellm.completion)
+        *args, **kwargs: Arguments to pass to the function
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds between retries
+        
+    Returns:
+        Function result
+    """
+    retry_delay = initial_delay
+    
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Check if it's a retryable error
+            error_str = str(e).lower()
+            is_retryable = any(keyword in error_str for keyword in [
+                '502', 'bad gateway', 'service unavailable', '503', 
+                'timeout', 'connection error', 'server error', '500'
+            ])
+            
+            if is_retryable and attempt < max_retries - 1:
+                print(f"⚠️  API error (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"⏳ Waiting {retry_delay} seconds before retry...")
+                time.sleep(retry_delay)
+                retry_delay *= 1.5  # Exponential backoff
+                continue
+            else:
+                # Not retryable or final attempt - re-raise the error
+                raise e
 
 
 def generate_system_cache(campaign_name: str, scratchpad: bool = False) -> str:
@@ -560,8 +598,8 @@ def pre_cache_static_content(characters: List, system_cache: str,
 
             # Make a minimal completion to create the caches
             try:
-                import litellm
-                response = litellm.completion(
+                response = retry_llm_call(
+                    litellm.completion,
                     model=first_character.model,
                     messages=messages,
                     max_tokens=10,
@@ -598,7 +636,8 @@ def pre_cache_static_content(characters: List, system_cache: str,
                 ]
 
                 try:
-                    response = litellm.completion(
+                    response = retry_llm_call(
+                        litellm.completion,
                         model=character.model,
                         messages=messages,
                         max_tokens=10,
@@ -671,8 +710,8 @@ def create_cached_completion(character,
         # Try without explicit cache key first to see if automatic caching works
         pass  # Let OpenAI handle automatic prefix caching
 
-    # Use LiteLLM for all providers
-    response = litellm.completion(**completion_args)
+    # Use LiteLLM for all providers with retry logic
+    response = retry_llm_call(litellm.completion, **completion_args)
 
     # Print cache statistics if requested
     if print_cache:
