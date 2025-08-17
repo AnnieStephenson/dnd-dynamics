@@ -85,12 +85,20 @@ def extract_campaign_parameters(campaign_file_path: str,
     # Extract the initial scenario from the Dungeon Master
     scenario_text = {}
     current_char = 'Dungeon Master'
-    i = 1
-    while current_char == 'Dungeon Master':
-        scenario_text[str(i)] = campaign_data[str(i)]
-        scenario_text[str(i)]['date'] = datetime.now().isoformat()
-        i += 1
-        current_char = campaign_data[str(i)]['character']
+
+    # Get all message keys sorted numerically
+    message_keys = sorted([int(k) for k in campaign_data.keys() if k.isdigit()])
+
+    for key_num in message_keys:
+        key_str = str(key_num)
+        current_char = campaign_data[key_str]['character']
+
+        if current_char == 'Dungeon Master':
+            scenario_text[key_str] = campaign_data[key_str]
+            scenario_text[key_str]['date'] = datetime.now().isoformat()
+        else:
+            # Stop when we reach the first non-DM character
+            break
 
 
     return {
@@ -290,16 +298,17 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
         """
 
     response = retry_llm_call(litellm.completion,
-                             model=model,
-                             messages=[{
-                                 "role": "user",
-                                 "content": prompt
-                             }],
-                             max_tokens=DEFAULT_MAX_TOKENS,
-                             temperature=DEFAULT_TEMPERATURE)
+                              model=model,
+                              messages=[{
+                                  "role": "user",
+                                  "content": prompt
+                              }],
+                              max_tokens=DEFAULT_MAX_TOKENS,
+                              temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
- 
+    print(response_text)
+
     # Parse the personalities using the general parser
     personalities_dict = parse_name_descriptions(response_text, player_names)
 
@@ -310,9 +319,10 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
 
     return player_personalities
 
+
 def generate_character_sheets(campaign_data: Dict[str, Any],
-                             character_names: List[str],
-                             model: str) -> Dict[str, Dict]:
+                              character_names: List[str],
+                              model: str) -> Dict[str, Dict]:
     """
     Query LLM to extract and infer complete D&D character sheets from campaign text.
     
@@ -346,6 +356,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
 
         Characters to analyze:
         {np.array(character_names[character_names != 'Dungeon Master'])}
+        
 
         IMPORTANT: Use ability scores and level from the initial game state, not from later progression during the campaign.
 
@@ -380,16 +391,17 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
         Base ability scores on typical arrays (15,14,13,12,10,8) adjusted for race and class.
         """
 
-    response = retry_llm_call(
-        litellm.completion,
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=DEFAULT_MAX_TOKENS,
-        temperature=DEFAULT_TEMPERATURE
-    )
+    response = retry_llm_call(litellm.completion,
+                              model=model,
+                              messages=[{
+                                  "role": "user",
+                                  "content": prompt
+                              }],
+                              max_tokens=DEFAULT_MAX_TOKENS,
+                              temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
-    character_sheets = [None] # start with DM character sheet of none
+    character_sheets = [None]  # start with DM character sheet of none
 
     # Parse response into character sheets
     current_character = None
@@ -400,14 +412,34 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
         if not line:
             continue
 
-        # Check if this line starts a new character
-        if any(line.startswith(name + ":") or line.startswith(f"[{name}]:")
-            for name in character_names if name != "Dungeon Master"):            # Save previous character if exists
+        # Check if this line starts a new character (handle parenthetical additions)
+        line_matches_character = False
+        for name in character_names:
+            if name == "Dungeon Master":
+                continue
+            # Check for exact match: "Name:" or "[Name]:"
+            if line.startswith(name + ":") or line.startswith(f"[{name}]:"):
+                line_matches_character = True
+                break
+            # Check for match with parentheses: "Name (......):" or "[Name (......):]"
+            if (line.startswith(name + " (") and "):" in line) or \
+               (line.startswith(f"[{name} (") and "):" in line):
+                line_matches_character = True
+                break
+
+        if line_matches_character:  # Save previous character if exists
             if current_character and current_sheet:
                 character_sheets.append(current_sheet.copy())
 
-            # Start new character
-            current_character = line.split(':', 1)[0].strip()
+            # Start new character - extract base name without parentheses
+            name_part = line.split(':', 1)[0].strip()
+            # Remove brackets if present: [Name] -> Name
+            if name_part.startswith('[') and name_part.endswith(']'):
+                name_part = name_part[1:-1]
+            # Remove parenthetical part: "Name (extra)" -> "Name"
+            if ' (' in name_part:
+                name_part = name_part.split(' (')[0]
+            current_character = name_part.strip()
             current_sheet = {}
             continue
 
@@ -418,19 +450,27 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
             field_value = field_value.strip()
 
             # Convert certain fields to appropriate types
-            if field_name in ['Level', 'Strength', 'Dexterity', 'Constitution',
-                             'Intelligence', 'Wisdom', 'Charisma', 'Armor Class']:
+            if field_name in [
+                    'Level', 'Strength', 'Dexterity', 'Constitution',
+                    'Intelligence', 'Wisdom', 'Charisma', 'Armor Class'
+            ]:
                 try:
                     if field_value.lower() != 'unknown':
                         field_value = int(field_value)
                 except ValueError:
                     pass  # Keep as string if conversion fails
 
-            elif field_name in ['Saving Throw Proficiencies', 'Skill Proficiencies',
-                               'Languages', 'Equipment', 'Spells Known', 'Special Abilities']:
+            elif field_name in [
+                    'Saving Throw Proficiencies', 'Skill Proficiencies',
+                    'Languages', 'Equipment', 'Spells Known',
+                    'Special Abilities'
+            ]:
                 # Convert comma-separated lists
                 if field_value.lower() != 'unknown':
-                    field_value = [item.strip() for item in field_value.split(',') if item.strip()]
+                    field_value = [
+                        item.strip() for item in field_value.split(',')
+                        if item.strip()
+                    ]
 
             current_sheet[field_name] = field_value
 
@@ -614,13 +654,13 @@ class GameSession:
             clean_line = line.lower().strip()
             # Remove markdown formatting: **text** -> text, *text* -> text
             clean_line = clean_line.replace('**', '').replace('*', '')
-            
+
             if 'final response:' in clean_line:
                 found_final_response = True
                 # Find the colon position in the original (uncleaned) line
                 original_lower = line.lower()
                 colon_positions = []
-                
+
                 # Look for colon after "final response" with optional markdown
                 for i, char in enumerate(original_lower):
                     if char == ':':
@@ -628,14 +668,14 @@ class GameSession:
                         text_before_colon = original_lower[:i].replace('**', '').replace('*', '').strip()
                         if text_before_colon.endswith('final response'):
                             colon_positions.append(i)
-                
+
                 if colon_positions:
                     colon_pos = colon_positions[-1]  # Use the last colon found
                     remainder = line[colon_pos + 1:].strip()
                     if remainder:
                         final_response_lines.append(remainder)
                 continue
-            
+
             if found_final_response:
                 final_response_lines.append(line)
 
@@ -662,7 +702,7 @@ class GameSession:
             max_format_retries: Maximum retries for scratchpad formatting failures
         """
         character = self.character_lookup[character_name]
-        
+
         for format_attempt in range(max_format_retries + 1):
             try:
                 # Generate character response and manage prompt caching
@@ -677,10 +717,10 @@ class GameSession:
 
                 # Parse scratchpad response if enabled
                 final_response = self._parse_scratchpad_response(raw_response)
-                
+
                 # Success! Break out of retry loop
                 break
-                
+
             except ValueError as e:
                 # Check if this is a scratchpad parsing error
                 if "SCRATCHPAD PARSING ERROR" in str(e) and format_attempt < max_format_retries:
