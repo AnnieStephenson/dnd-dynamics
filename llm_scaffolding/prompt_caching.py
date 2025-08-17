@@ -98,8 +98,8 @@ GAME CONTEXT:
 - Responses should include both actions and dialogue as appropriate for the situation
 
 CRITICAL TURN RESTRICTIONS:  
-- You are generating EXACTLY ONE character turn for your specific character only 
-- Do NOT generate responses for other characters
+- You are generating EXACTLY ONE turn for your assigned role (either a player character OR the Dungeon Master)
+- Do NOT generate responses for other characters or roles
 
 RESPONSE GUIDELINES:
 - Stay true to your character's personality, abilities, and background
