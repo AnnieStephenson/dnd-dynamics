@@ -50,7 +50,8 @@ def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
             is_retryable = any(keyword in error_str for keyword in [
                 '502', 'bad gateway', 'service unavailable', '503', 
                 'timeout', 'connection error', 'server error', '500',
-                '529', 'overloaded', 'overloaded_error', 'rate limit'
+                '529', 'overloaded', 'overloaded_error', 'rate limit',
+                'disconnected', 'geminiexception'
             ])
             
             if is_retryable and attempt < max_retries - 1:

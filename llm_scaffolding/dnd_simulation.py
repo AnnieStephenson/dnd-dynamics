@@ -160,6 +160,10 @@ def parse_name_descriptions(response_text, names):
         clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
         clean_name = re.sub(r'\*+', '', clean_name).strip()
 
+        # Remove parenthetical additions: "player (character)" -> "player"
+        if ' (' in clean_name and ')' in clean_name:
+            clean_name = clean_name.split(' (')[0].strip()
+
         # Check if this matches any of our names (case insensitive)
         for name in names:
             if name.lower() == clean_name.lower():
@@ -190,6 +194,10 @@ def parse_name_descriptions(response_text, names):
             # Clean up potential name
             clean_name = re.sub(r'^[\d\.\)\-\*\s]+', '', potential_name)
             clean_name = re.sub(r'\*+', '', clean_name).strip()
+
+            # Remove parenthetical additions: "player (character)" -> "player"
+            if ' (' in clean_name and ')' in clean_name:
+                clean_name = clean_name.split(' (')[0].strip()
 
             # Check if this matches any of our names
             for name in names:
@@ -307,7 +315,6 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
                               temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
-    print(response_text)
 
     # Parse the personalities using the general parser
     personalities_dict = parse_name_descriptions(response_text, player_names)
@@ -401,6 +408,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
                               temperature=DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
+    print(response_text)
     character_sheets = [None]  # start with DM character sheet of none
 
     # Parse response into character sheets
