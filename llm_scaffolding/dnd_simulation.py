@@ -44,12 +44,11 @@ def extract_campaign_parameters(campaign_file_path: str,
         - campaign_name: Name of the campaign
         - total_messages: Total number of messages in campaign
     """
-    # Load and label data
-    with open(campaign_file_path, 'r', encoding='utf-8') as f:
-        campaign_data = json.load(f)
+    # Load and label data with corrections applied
     campaign_name = Path(campaign_file_path).stem
-    single_campaign_data = {campaign_name: campaign_data}
-    df = dl._load_dnd_data(single_campaign_data)
+    campaigns, json_data = dl.load_campaigns([campaign_name], apply_corrections=True, return_json=True)
+    df = campaigns[campaign_name]
+    campaign_data = json_data[campaign_name]  # Use corrected JSON data
 
     # Extract metadata
     character_turns = np.array(df['character'].tolist())

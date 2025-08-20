@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tqdm import tqdm
 import json
+from . import data_correction
 
 # ===================================================================
 # USER-FACING CAMPAIGN LOADING FUNCTIONS
@@ -32,7 +33,8 @@ import json
 def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[int] = None,
     show_progress: bool = True,
     return_json: bool = False,
-    messages_per_session: int = 5
+    messages_per_session: int = 5,
+    apply_corrections: bool = True
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
     Load and process campaigns from various sources.
@@ -45,6 +47,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         show_progress: Whether to show progress indicators
         return_json: If True, return both DataFrames and original JSON data
         messages_per_session: Number of messages per session for creating session_id column
+        apply_corrections: If True, apply automated and manual data corrections
         
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
@@ -55,7 +58,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
     # Handle different source types
     if isinstance(source, list):
         # Multiple campaign names - search in standard directories
-        return _load_campaigns_by_names(source, module_dir, return_json, messages_per_session)
+        return _load_campaigns_by_names(source, module_dir, return_json, messages_per_session, apply_corrections)
     
     elif isinstance(source, (str, Path)):
         source_str = str(source)
@@ -77,20 +80,20 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
                     campaigns_dir = relative_path
                 else:
                     # Treat as single campaign name
-                    result = _load_campaigns_by_names([source_str], module_dir, return_json, messages_per_session)
+                    result = _load_campaigns_by_names([source_str], module_dir, return_json, messages_per_session, apply_corrections)
                     if return_json:
                         return result
                     else:
                         return result
         
         # Load from directory path
-        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session)
+        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session, apply_corrections)
     
     else:
         raise ValueError(f"Unsupported source type: {type(source)}")
 
 
-def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool, messages_per_session: int):
+def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool, messages_per_session: int, apply_corrections: bool):
     """Load campaigns by searching for specific names in standard directories."""
     search_dirs = [
         module_dir / 'data/raw-human-games/individual_campaigns/',
@@ -109,6 +112,14 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
                 # Load the campaign file
                 with open(campaign_file, 'r', encoding='utf-8') as f:
                     campaign_data = json.load(f)
+                
+                # Apply corrections if enabled
+                if apply_corrections:
+                    manual_corrections_file = Path(__file__).parent.parent / 'data' / 'manual_corrections.json'
+                    manual_corrections = data_correction.load_manual_corrections(str(manual_corrections_file))
+                    campaign_data = data_correction.apply_all_corrections(
+                        campaign_data, campaign_name, manual_corrections
+                    )
                 
                 # Create single-campaign data structure for _load_dnd_data
                 single_campaign_data = {campaign_name: campaign_data}
@@ -129,7 +140,7 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
 
 
 def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[int], 
-                                 show_progress: bool, return_json: bool, messages_per_session: int):
+                                 show_progress: bool, return_json: bool, messages_per_session: int, apply_corrections: bool):
     """Load campaigns from a directory path."""
     # Get sorted list of campaign files
     campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
@@ -164,6 +175,14 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
         # Load individual campaign file
         with open(campaign_file, 'r', encoding='utf-8') as f:
             campaign_data = json.load(f)
+
+        # Apply corrections if enabled
+        if apply_corrections:
+            manual_corrections_file = Path(__file__).parent.parent / 'data' / 'manual_corrections.json'
+            manual_corrections = data_correction.load_manual_corrections(str(manual_corrections_file))
+            campaign_data = data_correction.apply_all_corrections(
+                campaign_data, campaign_id, manual_corrections
+            )
 
         # Create single-campaign data structure for _load_dnd_data
         single_campaign_data = {campaign_id: campaign_data}
