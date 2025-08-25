@@ -20,7 +20,7 @@ import litellm
 import textwrap
 import re
 
-from .api_config import validate_api_key_for_model
+from api_config import validate_api_key_for_model
 from . import prompt_caching as pc
 from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from .prompt_caching import retry_llm_call

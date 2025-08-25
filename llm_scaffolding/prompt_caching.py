@@ -20,7 +20,7 @@ import litellm
 import anthropic
 import os
 import time
-from .api_config import validate_api_key_for_model, get_model_provider
+from api_config import validate_api_key_for_model, get_model_provider
 from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from analysis import data_loading as dl
 from analysis import basic_metrics as basic

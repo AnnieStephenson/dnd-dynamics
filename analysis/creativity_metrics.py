@@ -827,6 +827,12 @@ def _analyze_single_campaign_creativity(df, campaign_id: str, show_progress: boo
     Returns:
         Dict with creativity analysis results
     """
+    # Check if campaign has sufficient data for analysis
+    min_texts_required = 5
+    if len(df) < min_texts_required:
+        print(f"⚠️  Skipping creativity analysis for {campaign_id}: insufficient data ({len(df)} texts, minimum {min_texts_required} required)")
+        return None
+    
     campaign_results = {}
     
     # Get embeddings for all text
@@ -921,9 +927,12 @@ def analyze_creativity(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
                 iterator = data_to_process.items()
             
             for campaign_id, df in iterator:
-                new_results[campaign_id] = _analyze_single_campaign_creativity(
+                result = _analyze_single_campaign_creativity(
                     df, campaign_id, show_progress=False
                 )
+                # Only include campaigns that had sufficient data
+                if result is not None:
+                    new_results[campaign_id] = result
         
         # Save new results and combine with cached results
         return batch.save_new_results_and_combine(
