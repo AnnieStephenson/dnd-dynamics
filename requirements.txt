@@ -33,6 +33,10 @@ kaleido>=0.2.1
 nltk>=3.7
 spacy>=3.4.0
 
+# LLM API abstraction
+litellm>=1.0.0
+anthropic>=0.18.0
+
 # Progress bars and utilities
 tqdm>=4.62.0
 

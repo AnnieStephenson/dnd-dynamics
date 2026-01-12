@@ -20,7 +20,7 @@ import litellm
 import textwrap
 import re
 
-from api_config import validate_api_key_for_model
+from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
 from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from .prompt_caching import retry_llm_call
@@ -30,7 +30,7 @@ from analysis import data_loading as dl
 # ===================================================================
 
 def extract_campaign_parameters(campaign_file_path: str,
-                                model: str = "claude-3-5-sonnet-20240620") -> Dict[str, Any]:
+                                model: str = "claude-sonnet-4-5-20250929") -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
 
@@ -492,7 +492,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
 # ===============================================================
 
 
-def create_characters(campaign_params: Dict, model: str = "claude-3-5-sonnet-20240620") -> List['CharacterAgent']:
+def create_characters(campaign_params: Dict, model: str = "claude-sonnet-4-5-20250929") -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
     
@@ -568,7 +568,7 @@ class CharacterAgent:
 
     def __init__(self, name: str, player_name: str, gender: str, race: str,
                  dnd_class: str, personality: str, player_personality: str,
-                 character_sheet: Dict, model: str = "claude-3-5-sonnet-20240620"):
+                 character_sheet: Dict, model: str = "claude-sonnet-4-5-20250929"):
         """
         Initialize character agent.
         
