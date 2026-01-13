@@ -22,7 +22,7 @@ import re
 
 from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
-from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_MODEL
 from .prompt_caching import retry_llm_call
 from analysis import data_loading as dl
 # ===================================================================
@@ -30,7 +30,7 @@ from analysis import data_loading as dl
 # ===================================================================
 
 def extract_campaign_parameters(campaign_file_path: str,
-                                model: str = "claude-sonnet-4-5-20250929") -> Dict[str, Any]:
+                                model: str = DEFAULT_MODEL) -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
 
@@ -328,7 +328,7 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
 
 def generate_character_sheets(campaign_data: Dict[str, Any],
                               character_names: List[str],
-                              model: str) -> Dict[str, Dict]:
+                              model: str = DEFAULT_MODEL) -> Dict[str, Dict]:
     """
     Query LLM to extract and infer complete D&D character sheets from campaign text.
     
@@ -492,7 +492,7 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
 # ===============================================================
 
 
-def create_characters(campaign_params: Dict, model: str = "claude-sonnet-4-5-20250929") -> List['CharacterAgent']:
+def create_characters(campaign_params: Dict, model: str = DEFAULT_MODEL) -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
     
@@ -568,7 +568,7 @@ class CharacterAgent:
 
     def __init__(self, name: str, player_name: str, gender: str, race: str,
                  dnd_class: str, personality: str, player_personality: str,
-                 character_sheet: Dict, model: str = "claude-sonnet-4-5-20250929"):
+                 character_sheet: Dict, model: str = DEFAULT_MODEL):
         """
         Initialize character agent.
         
