@@ -547,8 +547,10 @@ class HistoryCacheManager:
         Initialize history cache manager with summarization support.
 
         Args:
-            summary_chunk_size: Number of turns per summary chunk (default 50)
-            verbatim_window: Minimum verbatim turns to keep (default 50)
+            summary_chunk_size: Number of turns per summary chunk (default 50).
+                Set to 0 to disable summarization.
+            verbatim_window: Minimum verbatim turns to keep (default 50).
+                Set to None to pass all turns as context (no limit).
             summary_model: LLM model to use for summarization
         """
         self.summary_chunk_size = summary_chunk_size
@@ -566,7 +568,15 @@ class HistoryCacheManager:
         Generate summary when BOTH conditions met:
         1. We have a complete chunk to summarize
         2. At least verbatim_window turns remain after summarizing
+
+        Returns False (no summarization) if:
+        - verbatim_window is None (all turns mode)
+        - summary_chunk_size == 0 (no summarization mode)
         """
+        # Summarization disabled if verbatim_window is None or chunk_size is 0
+        if self.verbatim_window is None or self.summary_chunk_size == 0:
+            return False
+
         turns_summarized = len(self.summaries) * self.summary_chunk_size
         next_chunk_end = turns_summarized + self.summary_chunk_size - 1
 
@@ -632,9 +642,22 @@ class HistoryCacheManager:
 
         Returns:
             Recent context string
+
+        Behavior:
+        - If summaries exist: returns turns from last_summarized_turn + 1
+        - If verbatim_window is None: returns all turns (no limit)
+        - If verbatim_window is set (no summaries): returns only last N turns
         """
-        # Verbatim starts after last summarized turn
-        verbatim_start = self.last_summarized_turn + 1 if self.summaries else 0
+        if self.summaries:
+            # Have summaries: start after last summarized turn
+            verbatim_start = self.last_summarized_turn + 1
+        elif self.verbatim_window is None:
+            # No summaries, no limit: all turns
+            verbatim_start = 0
+        else:
+            # No summaries, limited window: only last N turns
+            verbatim_start = max(0, current_turn - self.verbatim_window)
+
         return format_turns_as_text(game_log, verbatim_start, current_turn - 1)
 
 

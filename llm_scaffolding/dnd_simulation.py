@@ -618,8 +618,10 @@ class GameSession:
             characters: List of CharacterAgent objects
             campaign_name: Name of the human campaign to load statistics from
             scratchpad: Whether to enable scratchpad reasoning for character responses
-            summary_chunk_size: Number of turns per summary chunk (default: 50)
-            verbatim_window: Minimum verbatim turns to keep (default: 50)
+            summary_chunk_size: Number of turns per summary chunk (default: 50).
+                Set to 0 to disable summarization.
+            verbatim_window: Minimum verbatim turns to keep (default: 50).
+                Set to None to pass all turns as context (no limit).
             summary_model: LLM model to use for summarization (default: DEFAULT_MODEL)
         """
         self.characters = characters
