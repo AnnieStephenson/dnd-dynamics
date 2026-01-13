@@ -535,8 +535,12 @@ def build_cached_messages(provider: str, system_cache: str, character_cache: str
 
 class HistoryCacheManager:
     """
-    Manages the rolling window cache of game history for the D&D simulation.
-    Includes automatic summarization of older turns to manage token usage.
+    Manages game history context for LLM prompts.
+
+    Supports three modes:
+    - Full context: verbatim_window=None passes all turns
+    - Limited window: summary_chunk_size=0 passes only last N turns
+    - Summarization: older turns are summarized, recent turns stay verbatim
     """
 
     def __init__(self,
@@ -557,7 +561,7 @@ class HistoryCacheManager:
         self.verbatim_window = verbatim_window
         self.summary_model = summary_model or DEFAULT_MODEL
 
-        self.history_cache = ""           # Now stores concatenated summaries
+        self.history_cache = ""           # Concatenated summaries (empty if no summarization)
         self.summaries = {}               # {chunk_start: summary_text}
         self.last_summarized_turn = -1    # Track highest summarized turn
 
@@ -606,7 +610,6 @@ class HistoryCacheManager:
         self.summaries[chunk_start] = summary
         self.last_summarized_turn = chunk_end
 
-        # Rebuild history_cache from all summaries (this IS the cache now)
         self._rebuild_history_cache()
 
     def _rebuild_history_cache(self):
