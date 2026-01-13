@@ -608,22 +608,31 @@ class GameSession:
                  characters: List[CharacterAgent],
                  campaign_name: str,
                  cache_update_interval: int = 20,
-                 scratchpad: bool = False):
+                 scratchpad: bool = False,
+                 summary_chunk_size: int = 50,
+                 verbatim_window: int = 50,
+                 summary_model: str = None):
         """
         Initialize game session.
-        
+
         Args:
             characters: List of CharacterAgent objects
             campaign_name: Name of the human campaign to load statistics from
             cache_update_interval: How many turns before updating history cache (default: 20)
             scratchpad: Whether to enable scratchpad reasoning for character responses
+            summary_chunk_size: Number of turns per summary chunk (default: 50)
+            verbatim_window: Minimum verbatim turns to keep (default: 50)
+            summary_model: LLM model to use for summarization (default: DEFAULT_MODEL)
         """
         self.characters = characters
         self.game_log = {}
         self.turn_counter = 0
         self.scratchpad = scratchpad
         self.history_cache_manager = pc.HistoryCacheManager(
-            cache_update_interval=cache_update_interval)
+            cache_update_interval=cache_update_interval,
+            summary_chunk_size=summary_chunk_size,
+            verbatim_window=verbatim_window,
+            summary_model=summary_model)
 
         # Generate system cache once at initialization with campaign stats
         self.system_cache = pc.generate_system_cache(campaign_name, scratchpad=scratchpad)
@@ -713,7 +722,7 @@ class GameSession:
         for format_attempt in range(max_format_retries + 1):
             try:
                 # Generate character response and manage prompt caching
-                raw_response = pc.create_cached_completion(
+                raw_response = pc.generate_character_response(
                     character=character,
                     game_log=self.game_log,
                     current_turn=self.turn_counter,

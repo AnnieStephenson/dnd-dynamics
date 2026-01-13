@@ -21,7 +21,7 @@ import anthropic
 import os
 import time
 from .api_config import validate_api_key_for_model, get_model_provider
-from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_MODEL
 from analysis import data_loading as dl
 from analysis import basic_metrics as basic
 
@@ -179,7 +179,7 @@ def generate_character_cache(character, include_player_personalities: bool = Tru
     return character_context
 
 
-def generate_history_cache(game_log: Dict, start_turn: int, end_turn: int) -> str:
+def format_turns_as_text(game_log: Dict, start_turn: int, end_turn: int) -> str:
     """
     Generate cached historical game context from a range of turns.
     
@@ -211,6 +211,46 @@ def generate_history_cache(game_log: Dict, start_turn: int, end_turn: int) -> st
             history_entries.append(f"Turn {turn_num} - {character}: {text_content.strip()}")
 
     return "\n".join(history_entries)
+
+
+def generate_turn_summary(game_log: Dict, start_turn: int, end_turn: int,
+                          model: str = None) -> str:
+    """
+    Generate a narrative summary of turns [start_turn, end_turn].
+    Preserves: character decisions, plot developments, relationships, quests.
+
+    Args:
+        game_log: Complete game log dictionary
+        start_turn: Starting turn number (inclusive)
+        end_turn: Ending turn number (inclusive)
+        model: LLM model to use for summarization
+
+    Returns:
+        Concise narrative summary of the turns
+    """
+    if model is None:
+        model = DEFAULT_MODEL
+
+    raw_history = format_turns_as_text(game_log, start_turn, end_turn)
+
+    if not raw_history.strip():
+        return ""
+
+    prompt = f"""Summarize this D&D game session (turns {start_turn}-{end_turn}).
+Preserve: key character decisions, plot developments, relationship changes,
+quest progress, combat outcomes, important dialogue.
+Keep it concise but complete enough for continuity.
+
+GAME HISTORY:
+{raw_history}
+
+SUMMARY:"""
+
+    response = retry_llm_call(litellm.completion,
+                              model=model,
+                              messages=[{"role": "user", "content": prompt}],
+                              max_tokens=DEFAULT_MAX_TOKENS)
+    return response.choices[0].message.content.strip()
 
 
 def format_current_situation(character_name: str) -> str:
@@ -496,64 +536,108 @@ def build_cached_messages(provider: str, system_cache: str, character_cache: str
 class HistoryCacheManager:
     """
     Manages the rolling window cache of game history for the D&D simulation.
+    Includes automatic summarization of older turns to manage token usage.
     """
 
-    def __init__(self, cache_update_interval: int = 50):
+    def __init__(self, cache_update_interval: int = 50,
+                 summary_chunk_size: int = 50,
+                 verbatim_window: int = 50,
+                 summary_model: str = None):
         """
-        Initialize history cache manager.
-        
+        Initialize history cache manager with summarization support.
+
         Args:
             cache_update_interval: How many turns before updating history cache
+            summary_chunk_size: Number of turns per summary chunk (default 50)
+            verbatim_window: Minimum verbatim turns to keep (default 50)
+            summary_model: LLM model to use for summarization
         """
         self.cache_update_interval = cache_update_interval
-        self.history_cache = ""
-        self.last_history_update = 0
+        self.summary_chunk_size = summary_chunk_size
+        self.verbatim_window = verbatim_window
+        self.summary_model = summary_model or DEFAULT_MODEL
 
+        self.history_cache = ""           # Now stores concatenated summaries
+        self.summaries = {}               # {chunk_start: summary_text}
+        self.last_summarized_turn = -1    # Track highest summarized turn
 
+    def _needs_new_summary(self, current_turn: int) -> bool:
+        """
+        Check if we should generate a new summary.
 
-    def should_update_history_cache(self, current_turn: int) -> bool:
+        Generate summary when BOTH conditions met:
+        1. We have a complete chunk to summarize
+        2. At least verbatim_window turns remain after summarizing
         """
-        Determine if the history cache needs updating.
-        
-        Args:
-            current_turn: Current turn number
-            
-        Returns:
-            True if history cache should be updated
-        """
-        # Update every N turns
-        return current_turn - self.last_history_update >= self.cache_update_interval
+        turns_summarized = len(self.summaries) * self.summary_chunk_size
+        next_chunk_end = turns_summarized + self.summary_chunk_size - 1
 
-    def update_history_cache(self, current_turn: int, game_log: Dict):
-        """
-        Update the cached historical context.
-        
-        Args:
-            current_turn: Current turn number
-            game_log: Complete game log
-        """
-        if current_turn <= self.cache_update_interval:
+        # Can't summarize turns that don't exist yet
+        if next_chunk_end >= current_turn:
+            return False
+
+        # Would we have enough verbatim turns remaining?
+        verbatim_remaining = current_turn - (next_chunk_end + 1)
+        return verbatim_remaining >= self.verbatim_window
+
+    def _generate_next_summary(self, current_turn: int, game_log: Dict):
+        """Generate the next needed summary chunk."""
+        chunk_index = len(self.summaries)
+        chunk_start = chunk_index * self.summary_chunk_size
+        chunk_end = chunk_start + self.summary_chunk_size - 1
+
+        print(f"\n{'='*60}")
+        print(f"Generating summary for turns {chunk_start}-{chunk_end}...")
+        summary = generate_turn_summary(
+            game_log, chunk_start, chunk_end, self.summary_model)
+
+        print(f"\n[Summary of turns {chunk_start}-{chunk_end}]")
+        print(summary)
+        print(f"{'='*60}\n")
+
+        self.summaries[chunk_start] = summary
+        self.last_summarized_turn = chunk_end
+
+        # Rebuild history_cache from all summaries (this IS the cache now)
+        self._rebuild_history_cache()
+
+    def _rebuild_history_cache(self):
+        """Rebuild the cached history from all summaries."""
+        if not self.summaries:
             self.history_cache = ""
             return
 
-        # Cache everything except the most recent turns
-        history_end = current_turn - self.cache_update_interval
-        self.history_cache = generate_history_cache(game_log, 0, history_end)
-        self.last_history_update = current_turn
+        parts = ["=== PREVIOUS SESSION SUMMARIES ==="]
+        for chunk_start in sorted(self.summaries.keys()):
+            chunk_end = chunk_start + self.summary_chunk_size - 1
+            parts.append(f"\n[Turns {chunk_start}-{chunk_end}]")
+            parts.append(self.summaries[chunk_start])
+
+        self.history_cache = "\n".join(parts)
+
+    def should_generate_summary(self, current_turn: int) -> bool:
+        """Public method to check if summary generation is needed."""
+        return self._needs_new_summary(current_turn)
+
+    def generate_summary(self, current_turn: int, game_log: Dict):
+        """Public method to generate next summary. Call in a loop until no more needed."""
+        if self._needs_new_summary(current_turn):
+            self._generate_next_summary(current_turn, game_log)
 
     def get_recent_context(self, current_turn: int, game_log: Dict) -> str:
         """
-        Get recent game context (not cached).
-        
+        Get verbatim recent turns (not summarized). Does NOT trigger summarization.
+
         Args:
             current_turn: Current turn number
             game_log: Complete game log
-            
+
         Returns:
             Recent context string
         """
-        start_turn = max(0, current_turn - self.cache_update_interval)
-        return generate_history_cache(game_log, start_turn, current_turn - 1)
+        # Verbatim starts after last summarized turn
+        verbatim_start = self.last_summarized_turn + 1 if self.summaries else 0
+        return format_turns_as_text(game_log, verbatim_start, current_turn - 1)
 
 
 def pre_cache_static_content(characters: List, system_cache: str,
@@ -656,7 +740,7 @@ def pre_cache_static_content(characters: List, system_cache: str,
                     print(f"⚠️  Pre-caching failed for {character.name}: {e}")
 
 
-def create_cached_completion(character,
+def generate_character_response(character,
                              game_log: Dict,
                              current_turn: int,
                              history_cache_manager: HistoryCacheManager,
@@ -686,9 +770,9 @@ def create_cached_completion(character,
     # Detect provider
     provider = get_model_provider(character.model)
 
-    # Update history cache if needed
-    if history_cache_manager.should_update_history_cache(current_turn):
-        history_cache_manager.update_history_cache(current_turn, game_log)
+    # Generate summaries if threshold crossed
+    while history_cache_manager.should_generate_summary(current_turn):
+        history_cache_manager.generate_summary(current_turn, game_log)
 
     # Generate content components
     character_cache = generate_character_cache(character,
