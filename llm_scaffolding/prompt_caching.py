@@ -539,7 +539,7 @@ class HistoryCacheManager:
     Includes automatic summarization of older turns to manage token usage.
     """
 
-    def __init__(self, cache_update_interval: int = 50,
+    def __init__(self,
                  summary_chunk_size: int = 50,
                  verbatim_window: int = 50,
                  summary_model: str = None):
@@ -547,12 +547,10 @@ class HistoryCacheManager:
         Initialize history cache manager with summarization support.
 
         Args:
-            cache_update_interval: How many turns before updating history cache
             summary_chunk_size: Number of turns per summary chunk (default 50)
             verbatim_window: Minimum verbatim turns to keep (default 50)
             summary_model: LLM model to use for summarization
         """
-        self.cache_update_interval = cache_update_interval
         self.summary_chunk_size = summary_chunk_size
         self.verbatim_window = verbatim_window
         self.summary_model = summary_model or DEFAULT_MODEL

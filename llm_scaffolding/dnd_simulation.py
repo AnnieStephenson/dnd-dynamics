@@ -607,7 +607,6 @@ class GameSession:
     def __init__(self,
                  characters: List[CharacterAgent],
                  campaign_name: str,
-                 cache_update_interval: int = 20,
                  scratchpad: bool = False,
                  summary_chunk_size: int = 50,
                  verbatim_window: int = 50,
@@ -618,7 +617,6 @@ class GameSession:
         Args:
             characters: List of CharacterAgent objects
             campaign_name: Name of the human campaign to load statistics from
-            cache_update_interval: How many turns before updating history cache (default: 20)
             scratchpad: Whether to enable scratchpad reasoning for character responses
             summary_chunk_size: Number of turns per summary chunk (default: 50)
             verbatim_window: Minimum verbatim turns to keep (default: 50)
@@ -629,7 +627,6 @@ class GameSession:
         self.turn_counter = 0
         self.scratchpad = scratchpad
         self.history_cache_manager = pc.HistoryCacheManager(
-            cache_update_interval=cache_update_interval,
             summary_chunk_size=summary_chunk_size,
             verbatim_window=verbatim_window,
             summary_model=summary_model)
