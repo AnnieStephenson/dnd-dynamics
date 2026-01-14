@@ -22,7 +22,7 @@ import re
 
 from .api_config import validate_api_key_for_model
 from . import prompt_caching as pc
-from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_MODEL
+from . import config
 from .prompt_caching import retry_llm_call
 from analysis import data_loading as dl
 # ===================================================================
@@ -30,13 +30,13 @@ from analysis import data_loading as dl
 # ===================================================================
 
 def extract_campaign_parameters(campaign_file_path: str,
-                                model: str = DEFAULT_MODEL) -> Dict[str, Any]:
+                                model: str = None) -> Dict[str, Any]:
     """
     Load human campaign file and extract initialization parameters.
 
     Args:
         campaign_file_path: Path to individual campaign JSON file
-        
+
     Returns:
         Dictionary containing campaign parameters:
         - num_players: Number of unique players
@@ -44,6 +44,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         - campaign_name: Name of the campaign
         - total_messages: Total number of messages in campaign
     """
+    model = model or config.DEFAULT_MODEL
     # Load and label data with corrections applied
     campaign_name = Path(campaign_file_path).stem
     campaigns, json_data = dl.load_campaigns([campaign_name], apply_corrections=True, return_json=True)
@@ -245,8 +246,8 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
                                  "role": "user",
                                  "content": prompt
                              }],
-                             max_tokens=DEFAULT_MAX_TOKENS,
-                             temperature=DEFAULT_TEMPERATURE)
+                             max_tokens=config.DEFAULT_MAX_TOKENS,
+                             temperature=config.DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
 
@@ -310,8 +311,8 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
                                   "role": "user",
                                   "content": prompt
                               }],
-                              max_tokens=DEFAULT_MAX_TOKENS,
-                              temperature=DEFAULT_TEMPERATURE)
+                              max_tokens=config.DEFAULT_MAX_TOKENS,
+                              temperature=config.DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
 
@@ -328,18 +329,19 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
 
 def generate_character_sheets(campaign_data: Dict[str, Any],
                               character_names: List[str],
-                              model: str = DEFAULT_MODEL) -> Dict[str, Dict]:
+                              model: str = None) -> Dict[str, Dict]:
     """
     Query LLM to extract and infer complete D&D character sheets from campaign text.
-    
+
     Args:
         campaign_data: Campaign message data
         character_names: List of character names
         model: LLM model to use
-        
+
     Returns:
         Dictionary mapping character names to their character sheet dictionaries
     """
+    model = model or config.DEFAULT_MODEL
 
     prompt = f"""
         You are analyzing a Dungeons & Dragons play-by-post campaign to extract character sheet information.
@@ -403,8 +405,8 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
                                   "role": "user",
                                   "content": prompt
                               }],
-                              max_tokens=DEFAULT_MAX_TOKENS,
-                              temperature=DEFAULT_TEMPERATURE)
+                              max_tokens=config.DEFAULT_MAX_TOKENS,
+                              temperature=config.DEFAULT_TEMPERATURE)
 
     response_text = response.choices[0].message.content
     print(response_text)
@@ -492,16 +494,17 @@ def generate_character_sheets(campaign_data: Dict[str, Any],
 # ===============================================================
 
 
-def create_characters(campaign_params: Dict, model: str = DEFAULT_MODEL) -> List['CharacterAgent']:
+def create_characters(campaign_params: Dict, model: str = None) -> List['CharacterAgent']:
     """
     Generate D&D characters for the simulation.
-    
+
     Args:
         character_data: extracted character info from human campaign
-        
+
     Returns:
         List of CharacterAgent objects
     """
+    model = model or config.DEFAULT_MODEL
     characters = []
 
     num_players = campaign_params['num_players']
@@ -568,15 +571,16 @@ class CharacterAgent:
 
     def __init__(self, name: str, player_name: str, gender: str, race: str,
                  dnd_class: str, personality: str, player_personality: str,
-                 character_sheet: Dict, model: str = DEFAULT_MODEL):
+                 character_sheet: Dict, model: str = None):
         """
         Initialize character agent.
-        
+
         Args:
             name: Character name
             personality: Character personality description
             model: LLM model to use
         """
+        model = model or config.DEFAULT_MODEL
         self.name = name
         self.player_name = player_name
         self.gender = gender
@@ -622,7 +626,7 @@ class GameSession:
                 Set to 0 to disable summarization.
             verbatim_window: Minimum verbatim turns to keep (default: 50).
                 Set to None to pass all turns as context (no limit).
-            summary_model: LLM model to use for summarization (default: DEFAULT_MODEL)
+            summary_model: LLM model to use for summarization (default: config.DEFAULT_MODEL)
         """
         self.characters = characters
         self.game_log = {}

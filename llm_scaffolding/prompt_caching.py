@@ -21,7 +21,7 @@ import anthropic
 import os
 import time
 from .api_config import validate_api_key_for_model, get_model_provider
-from . import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_MODEL
+from . import config
 from analysis import data_loading as dl
 from analysis import basic_metrics as basic
 
@@ -229,7 +229,7 @@ def generate_turn_summary(game_log: Dict, start_turn: int, end_turn: int,
         Concise narrative summary of the turns
     """
     if model is None:
-        model = DEFAULT_MODEL
+        model = config.DEFAULT_MODEL
 
     raw_history = format_turns_as_text(game_log, start_turn, end_turn)
 
@@ -249,7 +249,7 @@ SUMMARY:"""
     response = retry_llm_call(litellm.completion,
                               model=model,
                               messages=[{"role": "user", "content": prompt}],
-                              max_tokens=DEFAULT_MAX_TOKENS)
+                              max_tokens=config.DEFAULT_MAX_TOKENS)
     return response.choices[0].message.content.strip()
 
 
@@ -559,7 +559,7 @@ class HistoryCacheManager:
         """
         self.summary_chunk_size = summary_chunk_size
         self.verbatim_window = verbatim_window
-        self.summary_model = summary_model or DEFAULT_MODEL
+        self.summary_model = summary_model or config.DEFAULT_MODEL
 
         self.history_cache = ""           # Concatenated summaries (empty if no summarization)
         self.summaries = {}               # {chunk_start: summary_text}
@@ -719,7 +719,7 @@ def pre_cache_static_content(characters: List, system_cache: str,
                     model=first_character.model,
                     messages=messages,
                     max_tokens=10,
-                    temperature=DEFAULT_TEMPERATURE
+                    temperature=config.DEFAULT_TEMPERATURE
                 )
                 print(f"✅ Pre-cached system prompt and character context for {first_character.name}")
             except Exception as e:
@@ -757,7 +757,7 @@ def pre_cache_static_content(characters: List, system_cache: str,
                         model=character.model,
                         messages=messages,
                         max_tokens=10,
-                        temperature=DEFAULT_TEMPERATURE
+                        temperature=config.DEFAULT_TEMPERATURE
                     )
                     print(f"✅ Pre-cached character context for {character.name}")
                 except Exception as e:
@@ -815,8 +815,8 @@ def generate_character_response(character,
     completion_args = {
         "model": character.model,
         "messages": messages,
-        "max_tokens": DEFAULT_MAX_TOKENS,
-        "temperature": DEFAULT_TEMPERATURE,
+        "max_tokens": config.DEFAULT_MAX_TOKENS,
+        "temperature": config.DEFAULT_TEMPERATURE,
         **kwargs
     }
 
