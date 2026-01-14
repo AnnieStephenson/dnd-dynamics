@@ -27,23 +27,23 @@ from .prompt_caching import retry_llm_call, format_turns_as_text
 from analysis import data_loading as dl
 
 
-def find_character_first_appearances(campaign_data: Dict, character_names: List[str]) -> Dict[str, int]:
+def find_character_first_appearances(raw_campaign_json: Dict, character_names: List[str]) -> Dict[str, int]:
     """
     Find the first turn where each character appears.
 
     Args:
-        campaign_data: Full campaign data dictionary
+        raw_campaign_json: Full campaign data dictionary
         character_names: List of character names to find
 
     Returns:
         Dict mapping character name to first turn number
     """
     first_appearances = {}
-    message_keys = sorted([int(k) for k in campaign_data.keys() if k.isdigit()])
+    message_keys = sorted([int(k) for k in raw_campaign_json.keys() if k.isdigit()])
 
     for key_num in message_keys:
         key_str = str(key_num)
-        character = campaign_data[key_str].get('character')
+        character = raw_campaign_json[key_str].get('character')
         if character in character_names and character not in first_appearances:
             first_appearances[character] = key_num
             if len(first_appearances) == len(character_names):
@@ -53,7 +53,7 @@ def find_character_first_appearances(campaign_data: Dict, character_names: List[
 
 
 def build_extraction_excerpts(
-    campaign_data: Dict,
+    raw_campaign_json: Dict,
     character_names: List[str],
     initial_turns: int = None,
     intro_window: int = None,
@@ -65,7 +65,7 @@ def build_extraction_excerpts(
     Includes first N turns plus windows around late-joining characters.
 
     Args:
-        campaign_data: Full campaign data dictionary
+        raw_campaign_json: Full campaign data dictionary
         character_names: List of character names
         initial_turns: First N turns to always include (default: config.EXTRACTION_INITIAL_TURNS)
         intro_window: Turns after new character intro (default: config.EXTRACTION_INTRO_WINDOW)
@@ -78,8 +78,8 @@ def build_extraction_excerpts(
     intro_window = intro_window or config.EXTRACTION_INTRO_WINDOW
     pre_intro_turns = pre_intro_turns or config.EXTRACTION_PRE_INTRO_TURNS
 
-    first_appearances = find_character_first_appearances(campaign_data, character_names)
-    message_keys = sorted([int(k) for k in campaign_data.keys() if k.isdigit()])
+    first_appearances = find_character_first_appearances(raw_campaign_json, character_names)
+    message_keys = sorted([int(k) for k in raw_campaign_json.keys() if k.isdigit()])
     max_turn = max(message_keys) if message_keys else 0
 
     # Build list of (start, end, label) ranges
@@ -109,7 +109,7 @@ def build_extraction_excerpts(
     # Build excerpts with labels as clean text
     excerpt_parts = []
     for start, end, label in merged:
-        excerpt_text = format_turns_as_text(campaign_data, start, end)
+        excerpt_text = format_turns_as_text(raw_campaign_json, start, end)
         if excerpt_text:
             excerpt_parts.append(f"=== TURNS {start}-{end} ({label}) ===\n{excerpt_text}")
 
@@ -123,24 +123,35 @@ def build_extraction_excerpts(
 def extract_campaign_parameters(campaign_file_path: str,
                                 model: str = None) -> Dict[str, Any]:
     """
-    Load human campaign file and extract initialization parameters.
+    Extract campaign parameters and character data from a human campaign file.
+
+    Uses LLM to extract character personalities, player personalities, and
+    character sheets from campaign excerpts.
 
     Args:
         campaign_file_path: Path to individual campaign JSON file
+        model: LLM model to use for extraction (default: config.DEFAULT_MODEL)
 
     Returns:
-        Dictionary containing campaign parameters:
-        - num_players: Number of unique players
-        - character_names: List of character names (for future use)
+        Dictionary containing:
+        - num_players: Number of player characters
+        - total_messages: Total messages in campaign
         - campaign_name: Name of the campaign
-        - total_messages: Total number of messages in campaign
+        - character_names: Array of character names
+        - player_names: List of player usernames
+        - character_classes/races/genders: Lists of character attributes
+        - character_personalities: LLM-generated personality descriptions
+        - player_personalities: LLM-generated player profiles
+        - character_sheets: LLM-generated character sheet data
+        - character_turns: Array of which character acted each turn
+        - initial_scenario: Opening DM posts
     """
     model = model or config.DEFAULT_MODEL
     # Load and label data with corrections applied
     campaign_name = Path(campaign_file_path).stem
     campaigns, json_data = dl.load_campaigns([campaign_name], apply_corrections=True, return_json=True)
     df = campaigns[campaign_name]
-    campaign_data = json_data[campaign_name]  # Use corrected JSON data
+    raw_campaign_json = json_data[campaign_name]  # Use corrected JSON data
 
     # Extract metadata
     character_turns = np.array(df['character'].tolist())
@@ -159,19 +170,23 @@ def extract_campaign_parameters(campaign_file_path: str,
 
     validate_api_key_for_model(model)
 
+    # Build excerpts once for all extraction functions
+    excerpt_text = build_extraction_excerpts(raw_campaign_json, character_names)
+    print('Campaign excerpts for extraction:')
+    print(excerpt_text)
+
     character_personalities = generate_character_personalities(
-        campaign_data=campaign_data,
+        excerpt_text=excerpt_text,
         character_names=character_names,
         model=model)
 
     player_personalities = generate_player_personalities(
-        campaign_data=campaign_data,
+        excerpt_text=excerpt_text,
         player_names=player_names,
-        character_names=character_names,
         model=model)
 
     character_sheets = generate_character_sheets(
-        campaign_data=campaign_data,
+        excerpt_text=excerpt_text,
         character_names=character_names,
         model=model)
 
@@ -180,14 +195,14 @@ def extract_campaign_parameters(campaign_file_path: str,
     current_char = 'Dungeon Master'
 
     # Get all message keys sorted numerically
-    message_keys = sorted([int(k) for k in campaign_data.keys() if k.isdigit()])
+    message_keys = sorted([int(k) for k in raw_campaign_json.keys() if k.isdigit()])
 
     for key_num in message_keys:
         key_str = str(key_num)
-        current_char = campaign_data[key_str]['character']
+        current_char = raw_campaign_json[key_str]['character']
 
         if current_char == 'Dungeon Master':
-            scenario_text[key_str] = campaign_data[key_str]
+            scenario_text[key_str] = raw_campaign_json[key_str]
             scenario_text[key_str]['date'] = datetime.now().isoformat()
         else:
             # Stop when we reach the first non-DM character
@@ -302,16 +317,17 @@ def parse_name_descriptions(response_text, names):
     return personalities_dict
 
 
-def generate_character_personalities(campaign_data: Dict[str, Any],
+def generate_character_personalities(excerpt_text: str,
                                      character_names: List[str],
                                      model: str) -> List[str]:
     """
     Query LLM to extract fictional character personalities and backstories.
-    """
-    excerpt_text = build_extraction_excerpts(campaign_data, character_names)
-    print('Campaign excerpts for extraction:')
-    print(excerpt_text)
 
+    Args:
+        excerpt_text: Pre-built campaign excerpts
+        character_names: List of character names
+        model: LLM model to use
+    """
     prompt = f"""
         You are analyzing a Dungeons & Dragons play-by-post campaign.
 
@@ -362,15 +378,17 @@ def generate_character_personalities(campaign_data: Dict[str, Any],
     return personalities
 
 
-def generate_player_personalities(campaign_data: Dict[str, Any],
+def generate_player_personalities(excerpt_text: str,
                                   player_names: List[str],
-                                  character_names: List[str],
                                   model: str) -> List[str]:
     """
     Query LLM to extract player personalities and profiles.
-    """
-    excerpt_text = build_extraction_excerpts(campaign_data, character_names)
 
+    Args:
+        excerpt_text: Pre-built campaign excerpts
+        player_names: List of player usernames
+        model: LLM model to use
+    """
     prompt = f"""
         You are analyzing the behavior and writing of players in a Dungeons & Dragons play-by-post campaign.
 
@@ -425,22 +443,21 @@ def generate_player_personalities(campaign_data: Dict[str, Any],
     return player_personalities
 
 
-def generate_character_sheets(campaign_data: Dict[str, Any],
+def generate_character_sheets(excerpt_text: str,
                               character_names: List[str],
                               model: str = None) -> Dict[str, Dict]:
     """
     Query LLM to extract and infer complete D&D character sheets from campaign text.
 
     Args:
-        campaign_data: Campaign message data
+        excerpt_text: Pre-built campaign excerpts
         character_names: List of character names
         model: LLM model to use
 
     Returns:
-        Dictionary mapping character names to their character sheet dictionaries
+        List of character sheet dictionaries
     """
     model = model or config.DEFAULT_MODEL
-    excerpt_text = build_extraction_excerpts(campaign_data, character_names)
 
     prompt = f"""
         You are analyzing a Dungeons & Dragons play-by-post campaign to extract character sheet information.
