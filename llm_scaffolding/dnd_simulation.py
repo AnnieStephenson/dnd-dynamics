@@ -745,9 +745,15 @@ class GameSession:
             summary_model: LLM model to use for summarization (default: config.DEFAULT_MODEL)
         """
         self.characters = characters
+        self.campaign_name = campaign_name
         self.game_log = {}
         self.turn_counter = 0
         self.scratchpad = scratchpad
+        self.scratchpad_log = {}  # {turn_number: reasoning_text}
+        self.include_player_personalities = None  # Set during run_scenario
+        self.model = config.DEFAULT_MODEL
+        self.temperature = config.DEFAULT_TEMPERATURE
+        self.max_tokens = config.DEFAULT_MAX_TOKENS
         self.history_cache_manager = pc.HistoryCacheManager(
             summary_chunk_size=summary_chunk_size,
             verbatim_window=verbatim_window,
@@ -866,6 +872,10 @@ class GameSession:
                     # Either not a scratchpad error, or we've exhausted retries
                     raise e
 
+        # Store scratchpad reasoning if enabled
+        if self.scratchpad and raw_response != final_response:
+            self.scratchpad_log[str(self.turn_counter)] = raw_response
+
         # Print the response(s)
         if self.scratchpad and raw_response != final_response:
             # Show both reasoning and final response
@@ -917,13 +927,16 @@ class GameSession:
                      print_cache=False):
         """
         Main game loop that iterates through the turn sequence.
-        
+
         Args:
             initial_scenario: Starting scenario description
             turn_sequence: List of character names in turn order
             include_player_personalities: Whether to include player personality info
             print_cache: Whether to print cache statistics after each API call
         """
+        # Track settings for save()
+        self.include_player_personalities = include_player_personalities
+
         # Set initial scene
         self.game_log.update(initial_scenario)
 
@@ -954,3 +967,101 @@ class GameSession:
 
         print("\n" + "=" * 50)
         print("=== SIMULATION COMPLETE ===")
+
+    def save(self, output_dir: str = None):
+        """
+        Save game log, summaries, and scratchpads to files.
+
+        Args:
+            output_dir: Override default output directory (default: {project_root}/data/llm-games)
+
+        Creates subfolder structure:
+        - llm-games/game-logs/{base}.json
+        - llm-games/summaries/{base}.txt
+        - llm-games/scratchpads/{base}.txt
+        - llm-games/metadata_index.json (updated)
+        """
+        # Determine project root and output directory
+        project_root = Path(__file__).resolve().parent.parent
+        if output_dir:
+            base_dir = Path(output_dir)
+        else:
+            base_dir = project_root / 'data' / 'llm-games'
+
+        # Create subfolders if they don't exist
+        game_logs_dir = base_dir / 'game-logs'
+        summaries_dir = base_dir / 'summaries'
+        scratchpads_dir = base_dir / 'scratchpads'
+        game_logs_dir.mkdir(parents=True, exist_ok=True)
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        scratchpads_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build filename base
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # Sanitize model name (remove provider prefix like "gemini/")
+        model_str = self.model
+        if '/' in model_str:
+            model_str = model_str.split('/')[-1]
+
+        player_string = 'players' if self.include_player_personalities else 'no_players'
+        scratch_string = 'scratch' if self.scratchpad else 'no_scratch'
+
+        filename_base = f"{self.campaign_name}_{model_str}_{player_string}_{scratch_string}_{timestamp}"
+
+        # Build metadata
+        metadata = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "campaign_name": self.campaign_name,
+            "include_player_personalities": self.include_player_personalities,
+            "scratchpad": self.scratchpad,
+            "summarization_enabled": self.history_cache_manager is not None,
+            "summary_chunk_size": self.history_cache_manager.summary_chunk_size if self.history_cache_manager else None,
+            "extraction_initial_turns": config.EXTRACTION_INITIAL_TURNS,
+            "extraction_intro_window": config.EXTRACTION_INTRO_WINDOW,
+            "extraction_pre_intro_turns": config.EXTRACTION_PRE_INTRO_TURNS,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Add metadata to game_log and save
+        self.game_log["_metadata"] = metadata
+        game_log_path = game_logs_dir / f"{filename_base}.json"
+        with open(game_log_path, 'w') as f:
+            json.dump(self.game_log, f, indent=2)
+        print(f"💾 Game log saved to: {game_log_path}")
+
+        # Save summaries if available
+        if self.history_cache_manager and self.history_cache_manager.summaries:
+            summary_path = summaries_dir / f"{filename_base}.txt"
+            summary_parts = []
+            for chunk_start, summary_text in sorted(self.history_cache_manager.summaries.items()):
+                chunk_end = chunk_start + self.history_cache_manager.summary_chunk_size - 1
+                summary_parts.append(f"=== TURNS {chunk_start}-{chunk_end} ===\n{summary_text}")
+            with open(summary_path, 'w') as f:
+                f.write("\n\n".join(summary_parts))
+            print(f"📝 Summaries saved to: {summary_path}")
+
+        # Save scratchpads if available
+        if self.scratchpad_log:
+            scratchpad_path = scratchpads_dir / f"{filename_base}.txt"
+            scratchpad_parts = []
+            for turn_num, reasoning in sorted(self.scratchpad_log.items(), key=lambda x: int(x[0])):
+                scratchpad_parts.append(f"=== TURN {turn_num} ===\n{reasoning}")
+            with open(scratchpad_path, 'w') as f:
+                f.write("\n\n".join(scratchpad_parts))
+            print(f"🧠 Scratchpads saved to: {scratchpad_path}")
+
+        # Update metadata index
+        index_path = base_dir / 'metadata_index.json'
+        if index_path.exists():
+            with open(index_path, 'r') as f:
+                metadata_index = json.load(f)
+        else:
+            metadata_index = {}
+
+        metadata_index[filename_base] = metadata
+        with open(index_path, 'w') as f:
+            json.dump(metadata_index, f, indent=2)
+        print(f"📋 Metadata index updated: {index_path}")

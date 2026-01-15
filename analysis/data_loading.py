@@ -34,13 +34,14 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
     show_progress: bool = True,
     return_json: bool = False,
     messages_per_session: int = 5,
-    apply_corrections: bool = True
+    apply_corrections: bool = True,
+    filter_by: Optional[Dict] = None
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
     Load and process campaigns from various sources.
-    
+
     Args:
-        source: 'human' for human games, 'llm' for LLM games, 
+        source: 'human' for human games, 'llm' for LLM games,
                 Path/str for custom directory path OR single campaign name,
                 List[str] for multiple campaign names
         max_campaigns: Maximum number of campaigns to load (None for all)
@@ -48,7 +49,9 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         return_json: If True, return both DataFrames and original JSON data
         messages_per_session: Number of messages per session for creating session_id column
         apply_corrections: If True, apply automated and manual data corrections
-        
+        filter_by: Dict of metadata fields to filter on (LLM games only),
+                   e.g. {'model': 'gpt-4o', 'summary_chunk_size': 50}
+
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
         OR Tuple[Dict[str, pd.DataFrame], Dict]: (DataFrames, JSON data) if return_json=True
@@ -67,7 +70,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         if source_str == 'human':
             campaigns_dir = module_dir / 'data/raw-human-games/individual_campaigns/'
         elif source_str == 'llm':
-            campaigns_dir = module_dir / 'data/llm-games/'
+            campaigns_dir = module_dir / 'data/llm-games/game-logs/'
         else:
             # Check if it's a directory path or a single campaign name
             potential_path = Path(source_str)
@@ -87,7 +90,7 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
                         return result
         
         # Load from directory path
-        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session, apply_corrections)
+        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session, apply_corrections, filter_by)
     
     else:
         raise ValueError(f"Unsupported source type: {type(source)}")
@@ -97,7 +100,7 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
     """Load campaigns by searching for specific names in standard directories."""
     search_dirs = [
         module_dir / 'data/raw-human-games/individual_campaigns/',
-        module_dir / 'data/llm-games/'
+        module_dir / 'data/llm-games/game-logs/'
     ]
     
     campaign_dataframes = {}
@@ -139,11 +142,44 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
         return campaign_dataframes
 
 
-def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[int], 
-                                 show_progress: bool, return_json: bool, messages_per_session: int, apply_corrections: bool):
+def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[int],
+                                 show_progress: bool, return_json: bool, messages_per_session: int,
+                                 apply_corrections: bool, filter_by: Optional[Dict] = None):
     """Load campaigns from a directory path."""
-    # Get sorted list of campaign files
-    campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
+    # Check if this is the LLM games directory and filtering is requested
+    llm_games_dir = campaigns_dir.parent  # game-logs/ -> llm-games/
+    is_llm_dir = 'llm-games' in str(campaigns_dir)
+
+    # If filtering LLM games, use metadata index
+    if filter_by and is_llm_dir:
+        index_path = llm_games_dir / 'metadata_index.json'
+        if not index_path.exists():
+            # Auto-rebuild index if missing
+            if show_progress:
+                print("📋 Metadata index not found, rebuilding...")
+            rebuild_metadata_index(llm_games_dir)
+
+        if index_path.exists():
+            with open(index_path, 'r') as f:
+                metadata_index = json.load(f)
+
+            # Filter to matching files
+            matching_files = []
+            for filename_base, metadata in metadata_index.items():
+                matches = all(metadata.get(k) == v for k, v in filter_by.items())
+                if matches:
+                    file_path = campaigns_dir / f"{filename_base}.json"
+                    if file_path.exists():
+                        matching_files.append(file_path)
+
+            campaign_files = sorted(matching_files)
+            if show_progress:
+                print(f"🔍 Filter matched {len(campaign_files)} campaigns")
+        else:
+            campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
+    else:
+        # Get sorted list of campaign files
+        campaign_files = sorted([f for f in campaigns_dir.glob('*.json') if f.is_file()])
 
     total_available = len(campaign_files)
     campaigns_to_load = min(max_campaigns, total_available) if max_campaigns is not None else total_available
@@ -230,6 +266,10 @@ def _load_dnd_data(json_data: Dict, messages_per_session: int = 5) -> pd.DataFra
 
     for campaign_id, messages in json_data.items():
         for message_id, message_data in messages.items():
+            # Skip metadata keys
+            if message_id.startswith('_'):
+                continue
+
             # Handle different text formats with label separation
             text_content = ''
             in_character_text = ''
@@ -461,6 +501,47 @@ def _create_block_sessions(df: pd.DataFrame, messages_per_session: int = 5) -> p
         session_ids.append(f"session_{session_num}")
     
     return pd.Series(session_ids, index=df.index)
+
+
+# ===================================================================
+# METADATA INDEX FUNCTIONS
+# ===================================================================
+
+
+def rebuild_metadata_index(llm_games_dir: Path = None):
+    """
+    Rebuild metadata_index.json by scanning all campaign JSON files.
+
+    Args:
+        llm_games_dir: Path to llm-games directory (default: {project_root}/data/llm-games)
+
+    Scans all game-logs/*.json files, reads _metadata from each, writes index.
+    """
+    if llm_games_dir is None:
+        module_dir = Path(__file__).parent.parent
+        llm_games_dir = module_dir / 'data' / 'llm-games'
+
+    game_logs_dir = llm_games_dir / 'game-logs'
+    if not game_logs_dir.exists():
+        print(f"⚠️  No game-logs directory found at {game_logs_dir}")
+        return
+
+    metadata_index = {}
+    campaign_files = sorted(game_logs_dir.glob('*.json'))
+
+    for campaign_file in campaign_files:
+        filename_base = campaign_file.stem
+        with open(campaign_file, 'r', encoding='utf-8') as f:
+            campaign_data = json.load(f)
+
+        if '_metadata' in campaign_data:
+            metadata_index[filename_base] = campaign_data['_metadata']
+
+    index_path = llm_games_dir / 'metadata_index.json'
+    with open(index_path, 'w') as f:
+        json.dump(metadata_index, f, indent=2)
+
+    print(f"📋 Rebuilt metadata index with {len(metadata_index)} entries: {index_path}")
 
 
 # ===================================================================
