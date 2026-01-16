@@ -997,7 +997,8 @@ class GameSession:
         scratchpads_dir.mkdir(parents=True, exist_ok=True)
 
         # Build filename base
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        now = datetime.now()
+        timestamp = now.strftime('%Y%m%d_%H%M%S')
 
         # Sanitize model name (remove provider prefix like "gemini/")
         model_str = self.model
@@ -1022,7 +1023,10 @@ class GameSession:
             "extraction_initial_turns": config.EXTRACTION_INITIAL_TURNS,
             "extraction_intro_window": config.EXTRACTION_INTRO_WINDOW,
             "extraction_pre_intro_turns": config.EXTRACTION_PRE_INTRO_TURNS,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": now.isoformat(),
+            "year": now.year,
+            "month": now.month,
+            "day": now.day
         }
 
         # Add metadata to game_log and save

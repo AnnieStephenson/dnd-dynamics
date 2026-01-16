@@ -166,7 +166,10 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
             # Filter to matching files
             matching_files = []
             for filename_base, metadata in metadata_index.items():
-                matches = all(metadata.get(k) == v for k, v in filter_by.items())
+                matches = all(
+                    (metadata.get(k) in v if isinstance(v, list) else metadata.get(k) == v)
+                    for k, v in filter_by.items()
+                )
                 if matches:
                     file_path = campaigns_dir / f"{filename_base}.json"
                     if file_path.exists():
