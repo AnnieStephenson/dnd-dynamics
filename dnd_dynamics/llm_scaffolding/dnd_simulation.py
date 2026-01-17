@@ -20,11 +20,11 @@ import litellm
 import textwrap
 import re
 
-from .api_config import validate_api_key_for_model
+from dnd_dynamics.api_config import validate_api_key_for_model
+from dnd_dynamics import config
 from . import prompt_caching as pc
-from . import config
 from .prompt_caching import retry_llm_call, format_turns_as_text
-from analysis import data_loading as dl
+from dnd_dynamics.analysis import data_loading as dl
 
 
 def find_character_first_appearances(raw_campaign_json: Dict, character_names: List[str]) -> Dict[str, int]:

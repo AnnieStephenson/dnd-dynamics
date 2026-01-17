@@ -35,7 +35,8 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
     return_json: bool = False,
     messages_per_session: int = 5,
     apply_corrections: bool = True,
-    filter_by: Optional[Dict] = None
+    filter_by: Optional[Dict] = None,
+    min_turns: int = 5
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
     """
     Load and process campaigns from various sources.
@@ -51,17 +52,18 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         apply_corrections: If True, apply automated and manual data corrections
         filter_by: Dict of metadata fields to filter on (LLM games only),
                    e.g. {'model': 'gpt-4o', 'summary_chunk_size': 50}
+        min_turns: Minimum number of turns required to include a campaign (default 5)
 
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
         OR Tuple[Dict[str, pd.DataFrame], Dict]: (DataFrames, JSON data) if return_json=True
     """
-    module_dir = Path(__file__).parent.parent  # Go up to repository root
+    module_dir = Path(__file__).parent.parent.parent  # Go up to repository root
     
     # Handle different source types
     if isinstance(source, list):
         # Multiple campaign names - search in standard directories
-        return _load_campaigns_by_names(source, module_dir, return_json, messages_per_session, apply_corrections)
+        return _load_campaigns_by_names(source, module_dir, return_json, messages_per_session, apply_corrections, min_turns)
     
     elif isinstance(source, (str, Path)):
         source_str = str(source)
@@ -83,20 +85,20 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
                     campaigns_dir = relative_path
                 else:
                     # Treat as single campaign name
-                    result = _load_campaigns_by_names([source_str], module_dir, return_json, messages_per_session, apply_corrections)
+                    result = _load_campaigns_by_names([source_str], module_dir, return_json, messages_per_session, apply_corrections, min_turns)
                     if return_json:
                         return result
                     else:
                         return result
-        
+
         # Load from directory path
-        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session, apply_corrections, filter_by)
+        return _load_campaigns_from_directory(campaigns_dir, max_campaigns, show_progress, return_json, messages_per_session, apply_corrections, filter_by, min_turns)
     
     else:
         raise ValueError(f"Unsupported source type: {type(source)}")
 
 
-def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool, messages_per_session: int, apply_corrections: bool):
+def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return_json: bool, messages_per_session: int, apply_corrections: bool, min_turns: int):
     """Load campaigns by searching for specific names in standard directories."""
     search_dirs = [
         module_dir / 'data/raw-human-games/individual_campaigns/',
@@ -118,7 +120,7 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
                 
                 # Apply corrections if enabled
                 if apply_corrections:
-                    manual_corrections_file = Path(__file__).parent.parent / 'data' / 'manual_corrections.json'
+                    manual_corrections_file = Path(__file__).parent.parent.parent / 'data' / 'manual_corrections.json'
                     manual_corrections = data_correction.load_manual_corrections(str(manual_corrections_file))
                     campaign_data = data_correction.apply_all_corrections(
                         campaign_data, campaign_name, manual_corrections
@@ -129,8 +131,9 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
                 
                 # Load using helper function
                 df = _load_dnd_data(single_campaign_data, messages_per_session)
-                
-                if len(df) > 0:
+
+                # Only keep campaigns with enough turns
+                if len(df) >= min_turns:
                     campaign_dataframes[campaign_name] = df
                     if return_json:
                         json_data[campaign_name] = campaign_data
@@ -144,7 +147,8 @@ def _load_campaigns_by_names(campaign_names: List[str], module_dir: Path, return
 
 def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[int],
                                  show_progress: bool, return_json: bool, messages_per_session: int,
-                                 apply_corrections: bool, filter_by: Optional[Dict] = None):
+                                 apply_corrections: bool, filter_by: Optional[Dict] = None,
+                                 min_turns: int = 5):
     """Load campaigns from a directory path."""
     # Check if this is the LLM games directory and filtering is requested
     llm_games_dir = campaigns_dir.parent  # game-logs/ -> llm-games/
@@ -217,7 +221,7 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
 
         # Apply corrections if enabled
         if apply_corrections:
-            manual_corrections_file = Path(__file__).parent.parent / 'data' / 'manual_corrections.json'
+            manual_corrections_file = Path(__file__).parent.parent.parent / 'data' / 'manual_corrections.json'
             manual_corrections = data_correction.load_manual_corrections(str(manual_corrections_file))
             campaign_data = data_correction.apply_all_corrections(
                 campaign_data, campaign_id, manual_corrections
@@ -229,8 +233,8 @@ def _load_campaigns_from_directory(campaigns_dir: Path, max_campaigns: Optional[
         # Load using existing function
         df = _load_dnd_data(single_campaign_data, messages_per_session)
 
-        # Only keep non-empty campaigns
-        if len(df) > 0:
+        # Only keep campaigns with enough turns
+        if len(df) >= min_turns:
             campaign_dataframes[campaign_id] = df
             total_messages += len(df)
             successful_campaigns += 1
@@ -521,7 +525,7 @@ def rebuild_metadata_index(llm_games_dir: Path = None):
     Scans all game-logs/*.json files, reads _metadata from each, writes index.
     """
     if llm_games_dir is None:
-        module_dir = Path(__file__).parent.parent
+        module_dir = Path(__file__).parent.parent.parent  # Go up to repository root
         llm_games_dir = module_dir / 'data' / 'llm-games'
 
     game_logs_dir = llm_games_dir / 'game-logs'

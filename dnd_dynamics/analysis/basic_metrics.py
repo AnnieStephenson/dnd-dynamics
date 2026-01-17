@@ -71,7 +71,7 @@ def analyze_basic_metrics(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
         
         # Set default cache directory
         if cache_dir is None:
-            repo_root = Path(__file__).parent.parent
+            repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
             cache_dir = str(repo_root / 'data' / 'processed' / 'basic_results')
         
         # Handle caching using helper function

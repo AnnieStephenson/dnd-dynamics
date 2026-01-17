@@ -20,10 +20,10 @@ import litellm
 import anthropic
 import os
 import time
-from .api_config import validate_api_key_for_model, get_model_provider
-from . import config
-from analysis import data_loading as dl
-from analysis import basic_metrics as basic
+from dnd_dynamics.api_config import validate_api_key_for_model, get_model_provider
+from dnd_dynamics import config
+from dnd_dynamics.analysis import data_loading as dl
+from dnd_dynamics.analysis import basic_metrics as basic
 
 
 def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):

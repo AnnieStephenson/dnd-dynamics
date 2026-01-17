@@ -17,16 +17,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 import pandas as pd
-
-# Import LLM functionality
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
 import litellm
 import time
 
-# Local constants to avoid circular import
-DEFAULT_MAX_TOKENS = 3000
-DEFAULT_TEMPERATURE = 1.0
+from dnd_dynamics import config
+# Import api_config to trigger automatic API key loading
+import dnd_dynamics.api_config
 
 
 def _retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
@@ -145,10 +141,10 @@ def detect_character_name_conflicts(campaign_data: Dict) -> List[Tuple[str, List
     return conflicts
 
 
-def resolve_duplicate_character_names_llm(campaign_data: Dict, 
-                                        character_name: str, 
+def resolve_duplicate_character_names_llm(campaign_data: Dict,
+                                        character_name: str,
                                         players: List[str],
-                                        model: str = "claude-sonnet-4-5-20250929") -> Dict[str, str]:
+                                        model: str = None) -> Dict[str, str]:
     """
     Use LLM to resolve duplicate character name conflicts by analyzing player posts.
     
@@ -161,8 +157,11 @@ def resolve_duplicate_character_names_llm(campaign_data: Dict,
     Returns:
         Dictionary mapping player -> corrected_character_name
     """
+    if model is None:
+        model = config.CORRECTION_MODEL
+
     corrections = {}
-    
+
     for player in players:
         # Get first 10 posts from this player using the conflicted character name
         player_posts = []
@@ -217,7 +216,7 @@ IMPORTANT: Return ONLY the correct character name (no explanation), or return "{
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,  # Short response expected
-                temperature=DEFAULT_TEMPERATURE
+                temperature=config.DEFAULT_TEMPERATURE
             )
             
             suggested_name = response.choices[0].message.content.strip()
@@ -272,11 +271,11 @@ def apply_manual_corrections(campaign_data: Dict,
     return corrected_data
 
 
-def apply_all_corrections(campaign_data: Dict, 
+def apply_all_corrections(campaign_data: Dict,
                          campaign_name: str,
                          manual_corrections: Dict,
                          apply_llm_corrections: bool = True,
-                         model: str = "claude-sonnet-4-5-20250929") -> Dict:
+                         model: str = None) -> Dict:
     """
     Apply all automated and manual corrections to campaign data.
     

@@ -18,22 +18,22 @@ Tools for analyzing and simulating Dungeons & Dragons gameplay using statistical
 
 ### Analysis Example
 ```python
-import analysis.data_loading as dl
-import analysis.creativity_metrics as creativity
+from dnd_dynamics.analysis import data_loading as dl
+from dnd_dynamics.analysis import creativity_metrics as creativity
 
 # Load campaigns and analyze creativity
-campaigns = dl.load_campaigns('human', max_campaigns=10)  
+campaigns = dl.load_campaigns('human', max_campaigns=10)
 results = creativity.analyze_creativity(campaigns)
 ```
 
 ### Simulation Example
 ```python
-import llm_scaffolding.dnd_simulation as sim
-import llm_scaffolding
+from dnd_dynamics.llm_scaffolding import dnd_simulation as sim
+import dnd_dynamics
 
 # Configure LLM settings
-llm_scaffolding.config.DEFAULT_MODEL = "gpt-4o"
-llm_scaffolding.config.DEFAULT_TEMPERATURE = 1.0
+dnd_dynamics.config.SIMULATION_MODEL = "gpt-4o"
+dnd_dynamics.config.DEFAULT_TEMPERATURE = 1.0
 
 # Extract parameters from human campaign
 params = sim.extract_campaign_parameters('path/to/campaign.json')
@@ -65,16 +65,18 @@ campaigns = dl.load_campaigns('llm', filter_by={'model': 'gpt-4o'})
 
 ```
 dnd-dynamics/
-├── analysis/              # Campaign analysis tools
-│   ├── data_loading.py    # Load and process campaign data
-│   ├── basic_metrics.py   # Time intervals, post lengths, engagement
-│   ├── creativity_metrics.py # Semantic analysis, topic modeling
-│   ├── cohesion_metrics.py   # Linguistic alignment analysis
-│   └── batch.py          # Multi-campaign processing & caching
-├── llm_scaffolding/       # LLM simulation system
-│   ├── dnd_simulation.py  # Character agents & game sessions
-│   ├── prompt_caching.py  # Multi-provider prompt optimization
-│   └── api_config.py      # LLM provider configuration
+├── dnd_dynamics/          # Main Python package
+│   ├── __init__.py        # Package config (SIMULATION_MODEL, CORRECTION_MODEL, etc.)
+│   ├── api_config.py      # API key management for LLM providers
+│   ├── analysis/          # Campaign analysis tools
+│   │   ├── data_loading.py    # Load and process campaign data
+│   │   ├── basic_metrics.py   # Time intervals, post lengths, engagement
+│   │   ├── creativity_metrics.py # Semantic analysis, topic modeling
+│   │   ├── cohesion_metrics.py   # Linguistic alignment analysis
+│   │   └── batch.py          # Multi-campaign processing & caching
+│   └── llm_scaffolding/   # LLM simulation system
+│       ├── dnd_simulation.py  # Character agents & game sessions
+│       └── prompt_caching.py  # Multi-provider prompt optimization
 ├── data/
 │   ├── raw-human-games/   # Human campaign data
 │   └── llm-games/         # LLM simulation outputs

@@ -19,7 +19,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 from tqdm import tqdm
-import align
+#import align
 
 # Download required NLTK data for ALIGN
 import nltk
@@ -80,7 +80,7 @@ def analyze_cohesion(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
         
         # Set default cache directory
         if cache_dir is None:
-            repo_root = Path(__file__).parent.parent
+            repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
             cache_dir = str(repo_root / 'data' / 'processed' / 'cohesion_results')
         
         # Handle caching using helper function

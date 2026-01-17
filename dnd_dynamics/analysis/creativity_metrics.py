@@ -128,7 +128,7 @@ def get_embeddings(df: pd.DataFrame,
         
     """
     if cache_dir is None:
-        repo_root = Path(__file__).parent.parent
+        repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
         cache_dir = str(repo_root / 'data' / 'processed' / 'embeddings_cache')
 
     # Create cache directory
@@ -199,7 +199,7 @@ def get_embeddings_by_label(df: pd.DataFrame,
         Dictionary mapping label types to embedding arrays
     """
     if cache_dir is None:
-        repo_root = Path(__file__).parent.parent
+        repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
         cache_dir = str(repo_root / 'data' / 'processed' / 'embeddings_cache')
 
     if labels_to_process is None:
@@ -907,10 +907,10 @@ def analyze_creativity(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     
     elif isinstance(data, dict):
         # Multiple campaign analysis with caching support
-        
+
         # Set default cache directory
         if cache_dir is None:
-            repo_root = Path(__file__).parent.parent
+            repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
             cache_dir = str(repo_root / 'data' / 'processed' / 'creativity_results')
         
         # Handle caching using helper function
@@ -968,10 +968,10 @@ def analyze_dsi(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]], target_words
     
     elif isinstance(data, dict):
         # Multiple campaign analysis with caching support
-        
+
         # Set default cache directory
         if cache_dir is None:
-            repo_root = Path(__file__).parent.parent
+            repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
             cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_results')
         
         # Handle caching using helper function
