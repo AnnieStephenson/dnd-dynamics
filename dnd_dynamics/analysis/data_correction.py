@@ -19,6 +19,7 @@ from collections import defaultdict
 import pandas as pd
 import litellm
 import time
+from tqdm import tqdm
 
 from dnd_dynamics import config
 # Import api_config to trigger automatic API key loading
@@ -321,3 +322,62 @@ def apply_all_corrections(campaign_data: Dict,
     
     print(f"✅ Corrections completed for campaign: {campaign_name}")
     return corrected_data
+
+
+def correct_all_campaigns(apply_llm_corrections: bool = True,
+                          show_progress: bool = True) -> int:
+    """
+    Apply corrections to all human campaigns and save to corrected folder.
+
+    Run this once to pre-correct all campaigns. Subsequent loads will be fast.
+
+    Args:
+        apply_llm_corrections: Whether to use LLM for name conflict resolution
+        show_progress: Whether to show progress bar
+
+    Returns:
+        Number of campaigns corrected
+    """
+    module_dir = Path(__file__).parent.parent.parent
+    raw_dir = module_dir / 'data' / 'raw-human-games' / 'individual_campaigns'
+    corrected_dir = module_dir / 'data' / 'corrected-human-games'
+    corrected_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load manual corrections once
+    manual_corrections_file = module_dir / 'data' / 'manual_corrections.json'
+    manual_corrections = load_manual_corrections(str(manual_corrections_file))
+
+    campaign_files = sorted(raw_dir.glob('*.json'))
+    corrected_count = 0
+
+    if show_progress:
+        print(f"Correcting {len(campaign_files)} campaigns...")
+        iterator = tqdm(campaign_files, desc="Correcting campaigns")
+    else:
+        iterator = campaign_files
+
+    for campaign_file in iterator:
+        campaign_id = campaign_file.stem
+        corrected_path = corrected_dir / f"{campaign_id}.json"
+
+        # Skip if already corrected
+        if corrected_path.exists():
+            continue
+
+        with open(campaign_file, 'r', encoding='utf-8') as f:
+            campaign_data = json.load(f)
+
+        corrected_data = apply_all_corrections(
+            campaign_data, campaign_id, manual_corrections,
+            apply_llm_corrections=apply_llm_corrections
+        )
+
+        with open(corrected_path, 'w', encoding='utf-8') as f:
+            json.dump(corrected_data, f)
+
+        corrected_count += 1
+
+    if show_progress:
+        print(f"Corrected {corrected_count} new campaigns. Total in cache: {len(list(corrected_dir.glob('*.json')))}")
+
+    return corrected_count

@@ -149,7 +149,7 @@ def extract_campaign_parameters(campaign_file_path: str,
     model = model or config.SIMULATION_MODEL
     # Load and label data with corrections applied
     campaign_name = Path(campaign_file_path).stem
-    campaigns, json_data = dl.load_campaigns([campaign_name], apply_corrections=True, return_json=True)
+    campaigns, json_data = dl.load_campaigns([campaign_name], return_json=True)
     df = campaigns[campaign_name]
     raw_campaign_json = json_data[campaign_name]  # Use corrected JSON data
 
