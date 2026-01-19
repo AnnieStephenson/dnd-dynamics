@@ -982,7 +982,7 @@ class GameSession:
         - llm-games/metadata_index.json (updated)
         """
         # Determine project root and output directory
-        project_root = Path(__file__).resolve().parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         if output_dir:
             base_dir = Path(output_dir)
         else:
