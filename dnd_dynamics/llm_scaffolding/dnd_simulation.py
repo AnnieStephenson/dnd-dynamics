@@ -130,7 +130,7 @@ def extract_campaign_parameters(campaign_file_path: str,
 
     Args:
         campaign_file_path: Path to individual campaign JSON file
-        model: LLM model to use for extraction (default: config.DEFAULT_MODEL)
+        model: LLM model to use for extraction (default: config.SIMULATION_MODEL)
 
     Returns:
         Dictionary containing:
@@ -146,7 +146,7 @@ def extract_campaign_parameters(campaign_file_path: str,
         - character_turns: Array of which character acted each turn
         - initial_scenario: Opening DM posts
     """
-    model = model or config.DEFAULT_MODEL
+    model = model or config.SIMULATION_MODEL
     # Load and label data with corrections applied
     campaign_name = Path(campaign_file_path).stem
     campaigns, json_data = dl.load_campaigns([campaign_name], apply_corrections=True, return_json=True)
@@ -457,7 +457,7 @@ def generate_character_sheets(excerpt_text: str,
     Returns:
         List of character sheet dictionaries
     """
-    model = model or config.DEFAULT_MODEL
+    model = model or config.SIMULATION_MODEL
 
     prompt = f"""
         You are analyzing a Dungeons & Dragons play-by-post campaign to extract character sheet information.
@@ -620,7 +620,7 @@ def create_characters(campaign_params: Dict, model: str = None) -> List['Charact
     Returns:
         List of CharacterAgent objects
     """
-    model = model or config.DEFAULT_MODEL
+    model = model or config.SIMULATION_MODEL
     characters = []
 
     num_players = campaign_params['num_players']
@@ -696,7 +696,7 @@ class CharacterAgent:
             personality: Character personality description
             model: LLM model to use
         """
-        model = model or config.DEFAULT_MODEL
+        model = model or config.SIMULATION_MODEL
         self.name = name
         self.player_name = player_name
         self.gender = gender
@@ -742,7 +742,7 @@ class GameSession:
                 Set to 0 to disable summarization.
             verbatim_window: Minimum verbatim turns to keep (default: 50).
                 Set to None to pass all turns as context (no limit).
-            summary_model: LLM model to use for summarization (default: config.DEFAULT_MODEL)
+            summary_model: LLM model to use for summarization (default: config.SIMULATION_MODEL)
         """
         self.characters = characters
         self.campaign_name = campaign_name
@@ -751,7 +751,7 @@ class GameSession:
         self.scratchpad = scratchpad
         self.scratchpad_log = {}  # {turn_number: reasoning_text}
         self.include_player_personalities = None  # Set during run_scenario
-        self.model = config.DEFAULT_MODEL
+        self.model = config.SIMULATION_MODEL
         self.temperature = config.DEFAULT_TEMPERATURE
         self.max_tokens = config.DEFAULT_MAX_TOKENS
         self.history_cache_manager = pc.HistoryCacheManager(

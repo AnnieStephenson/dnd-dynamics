@@ -229,7 +229,7 @@ def generate_turn_summary(game_log: Dict, start_turn: int, end_turn: int,
         Concise narrative summary of the turns
     """
     if model is None:
-        model = config.DEFAULT_MODEL
+        model = config.SIMULATION_MODEL
 
     raw_history = format_turns_as_text(game_log, start_turn, end_turn)
 
@@ -559,7 +559,7 @@ class HistoryCacheManager:
         """
         self.summary_chunk_size = summary_chunk_size
         self.verbatim_window = verbatim_window
-        self.summary_model = summary_model or config.DEFAULT_MODEL
+        self.summary_model = summary_model or config.SIMULATION_MODEL
 
         self.history_cache = ""           # Concatenated summaries (empty if no summarization)
         self.summaries = {}               # {chunk_start: summary_text}
