@@ -19,11 +19,16 @@ Tools for analyzing and simulating Dungeons & Dragons gameplay using statistical
 ### Analysis Example
 ```python
 from dnd_dynamics.analysis import data_loading as dl
-from dnd_dynamics.analysis import creativity_metrics as creativity
+from dnd_dynamics.analysis import metrics
 
-# Load campaigns and analyze creativity
+# Load campaigns and run all metrics
 campaigns = dl.load_campaigns('human', max_campaigns=10)
-results = creativity.analyze_creativity(campaigns)
+results = metrics.analyze_all(campaigns)
+
+# Access individual results
+basic_stats = results['basic']
+semantic_analysis = results['semantic']
+jaccard_cohesion = results['jaccard']
 ```
 
 ### Simulation Example
@@ -70,10 +75,12 @@ dnd-dynamics/
 │   ├── api_config.py      # API key management for LLM providers
 │   ├── analysis/          # Campaign analysis tools
 │   │   ├── data_loading.py    # Load and process campaign data
-│   │   ├── basic_metrics.py   # Time intervals, post lengths, engagement
-│   │   ├── creativity_metrics.py # Semantic analysis, topic modeling
-│   │   ├── cohesion_metrics.py   # Linguistic alignment analysis
-│   │   └── batch.py          # Multi-campaign processing & caching
+│   │   ├── data_correction.py # LLM-based data correction
+│   │   ├── plot_utils.py      # Visualization helpers
+│   │   └── metrics/           # Campaign metrics
+│   │       ├── basic.py       # Time intervals, post lengths, engagement
+│   │       ├── semantic.py    # SBERT embeddings, session novelty, DSI
+│   │       └── jaccard.py     # Lexical cohesion via Jaccard similarity
 │   └── llm_scaffolding/   # LLM simulation system
 │       ├── dnd_simulation.py  # Character agents & game sessions
 │       └── prompt_caching.py  # Multi-provider prompt optimization
@@ -90,8 +97,8 @@ dnd-dynamics/
 ## 📊 Analysis Features
 
 - **Basic Metrics**: Time intervals, post lengths, player engagement
-- **Creativity Analysis**: Semantic embeddings, topic modeling, novelty detection
-- **Cohesion Analysis**: Linguistic alignment between players using lexical similarity
+- **Semantic Analysis**: SBERT embeddings, semantic distance, session novelty, DSI
+- **Jaccard Cohesion**: Lexical similarity between players within sessions
 - **Multi-Campaign Comparisons**: Statistical aggregation with intelligent caching
 - **Session-Based Analysis**: Configurable session boundaries for temporal analysis
 
@@ -112,14 +119,11 @@ dnd-dynamics/
 # Core dependencies
 pip install pandas numpy matplotlib seaborn
 
-# For creativity analysis
-pip install sentence-transformers bertopic torch
+# For semantic analysis
+pip install sentence-transformers torch transformers
 
-# For LLM simulation  
+# For LLM simulation
 pip install litellm anthropic
-
-# For cohesion analysis
-pip install align nltk
 ```
 
 ## 📚 Documentation

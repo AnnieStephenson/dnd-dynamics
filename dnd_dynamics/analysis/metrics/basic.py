@@ -1,9 +1,9 @@
 """
 Basic D&D Campaign Analysis Metrics
 
-This module provides fundamental analysis functions for D&D gameplay logs including 
+This module provides fundamental analysis functions for D&D gameplay logs including
 time patterns, posting behavior, message characteristics, and player activity metrics.
-Functions calculate statistics on time intervals, post lengths, character mentions, 
+Functions calculate statistics on time intervals, post lengths, character mentions,
 dice rolls, and action classifications to understand campaign dynamics and player engagement.
 """
 
@@ -11,8 +11,8 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
-from . import data_loading as dl
-from . import batch
+from .. import data_loading as dl
+from . import _cache
 from tqdm import tqdm
 
 # ===================================================================
@@ -22,10 +22,10 @@ from tqdm import tqdm
 def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> Dict:
     """
     Run all basic analysis functions for a single campaign.
-    
+
     Args:
         df: Campaign DataFrame
-        
+
     Returns:
         Dict with basic analysis results
     """
@@ -52,33 +52,33 @@ def analyze_basic_metrics(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
 ) -> Union[Dict, Dict[str, Dict]]:
     """
     Analyze basic metrics for single or multiple campaigns using DataFrames.
-    
+
     Args:
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
         cache_dir: Directory for caching results (defaults to data/processed/basic_results)
         force_refresh: Whether to force recomputation even if cached results exist
-        
+
     Returns:
         Dict of basic metrics for single campaign, or Dict[campaign_id, metrics] for multiple
     """
     if isinstance(data, pd.DataFrame):
         # Single campaign analysis - no caching for single campaigns
         return _analyze_single_campaign_basic_metrics(data)
-    
+
     elif isinstance(data, dict):
         # Multiple campaign analysis with caching support
-        
+
         # Set default cache directory
         if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent  # Go up to repository root
+            repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
             cache_dir = str(repo_root / 'data' / 'processed' / 'basic_results')
-        
+
         # Handle caching using helper function
-        cached_results, data_to_process = batch.handle_multi_campaign_caching(
+        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
             data, cache_dir, force_refresh, show_progress, "basic metrics"
         )
-        
+
         # Process missing campaigns
         new_results = {}
         if data_to_process:
@@ -86,15 +86,15 @@ def analyze_basic_metrics(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
                 iterator = tqdm(data_to_process.items(), desc="Analyzing campaigns", total=len(data_to_process))
             else:
                 iterator = data_to_process.items()
-            
+
             for campaign_id, df in iterator:
                 new_results[campaign_id] = _analyze_single_campaign_basic_metrics(df)
-        
+
         # Save new results and combine with cached results
-        return batch.save_new_results_and_combine(
+        return _cache.save_new_results_and_combine(
             cached_results, new_results, cache_dir, show_progress, "basic metrics"
         )
-    
+
     else:
         raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
 
@@ -103,11 +103,11 @@ def list_campaigns_by_size(campaign_dataframes: Dict[str, pd.DataFrame],
                           top_n: int = 10) -> List[Tuple[str, int]]:
     """
     List campaigns sorted by size (number of messages).
-    
+
     Args:
         campaign_dataframes: Dictionary of campaign DataFrames
         top_n: Number of top campaigns to return
-        
+
     Returns:
         List of (campaign_id, message_count) tuples sorted by size
     """
@@ -116,15 +116,15 @@ def list_campaigns_by_size(campaign_dataframes: Dict[str, pd.DataFrame],
     return campaign_sizes[:top_n]
 
 
-def get_campaign_sample(campaign_dataframes: Dict[str, pd.DataFrame], 
+def get_campaign_sample(campaign_dataframes: Dict[str, pd.DataFrame],
                        campaign_id: str) -> Optional[pd.DataFrame]:
     """
     Get a specific campaign's DataFrame for individual analysis.
-    
+
     Args:
         campaign_dataframes: Dictionary of campaign DataFrames
         campaign_id: ID of the campaign to retrieve
-        
+
     Returns:
         DataFrame for the specified campaign, or None if not found
     """
@@ -139,11 +139,11 @@ def get_campaign_sample(campaign_dataframes: Dict[str, pd.DataFrame],
 def analyze_time_intervals(df: pd.DataFrame, by_player: bool = False) -> Dict:
     """
     Analyze time intervals between consecutive posts.
-    
+
     Args:
         df: DataFrame containing D&D messages
         by_player: If True, analyze intervals per player
-        
+
     Returns:
         Dict containing interval statistics and histogram data for plotting
     """
@@ -185,11 +185,11 @@ def analyze_time_intervals(df: pd.DataFrame, by_player: bool = False) -> Dict:
 def analyze_cumulative_posts(df: pd.DataFrame, by_player: bool = False) -> Dict:
     """
     Analyze cumulative post count over time.
-    
+
     Args:
         df: DataFrame containing D&D messages
         by_player: If True, return cumulative posts per player
-        
+
     Returns:
         Dict containing cumulative post data for plotting
     """
@@ -224,10 +224,10 @@ def analyze_cumulative_posts(df: pd.DataFrame, by_player: bool = False) -> Dict:
 def analyze_unique_players_characters(df: pd.DataFrame) -> Dict:
     """
     Analyze number of unique players and characters over time.
-    
+
     Args:
         df: DataFrame containing D&D messages
-        
+
     Returns:
         Dict containing unique counts data for plotting
     """
@@ -260,11 +260,11 @@ def analyze_unique_players_characters(df: pd.DataFrame) -> Dict:
 def analyze_post_lengths(df: pd.DataFrame, by_player: bool = False) -> Dict:
     """
     Analyze histogram of post lengths (word count).
-    
+
     Args:
         df: DataFrame containing D&D messages
         by_player: If True, return distribution per player
-        
+
     Returns:
         Dict containing length statistics and histogram data
     """
@@ -305,11 +305,11 @@ def analyze_post_lengths(df: pd.DataFrame, by_player: bool = False) -> Dict:
 def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> Dict:
     """
     Analyze post lengths separated by character label (in-character, out-of-character, mixed).
-    
+
     Args:
         df: DataFrame containing D&D messages with label information
         by_player: If True, return distribution per player
-        
+
     Returns:
         Dict containing length statistics separated by label type
     """
@@ -419,11 +419,11 @@ def analyze_post_lengths_by_label(df: pd.DataFrame, by_player: bool = False) -> 
 def analyze_character_mentions(df: pd.DataFrame, top_n: int = 15) -> Dict:
     """
     Analyze most frequently mentioned character names.
-    
+
     Args:
         df: DataFrame containing D&D messages
         top_n: Number of top characters to include
-        
+
     Returns:
         Dict containing character mention statistics and data for plotting
     """
@@ -450,10 +450,10 @@ def analyze_character_mentions(df: pd.DataFrame, top_n: int = 15) -> Dict:
 def analyze_dice_roll_frequency(df: pd.DataFrame) -> Dict:
     """
     Analyze fraction of posts containing dice rolls.
-    
+
     Args:
         df: DataFrame containing D&D messages
-        
+
     Returns:
         Dict containing dice roll statistics and data for plotting
     """
@@ -492,10 +492,10 @@ def analyze_dice_roll_frequency(df: pd.DataFrame) -> Dict:
 def generate_summary_report(df: pd.DataFrame) -> Dict:
     """
     Generate a comprehensive summary report of the D&D campaign.
-    
+
     Args:
         df: DataFrame containing D&D messages
-        
+
     Returns:
         Dict containing comprehensive campaign statistics
     """
@@ -554,13 +554,13 @@ def generate_summary_report(df: pd.DataFrame) -> Dict:
 def analyze_paragraph_actions(json_data: Dict) -> Dict:
     """
     Analyze paragraph-level action types based on actual data structure.
-    
+
     This function examines the 'actions' field in each paragraph to count
     different types of actions: name_mentions, spells, dialogue, roll, weapon.
-    
+
     Args:
         json_data: Dictionary containing campaign data with paragraph structure
-        
+
     Returns:
         Dict containing paragraph-level action statistics and character label counts
     """
@@ -711,4 +711,3 @@ def analyze_paragraph_actions(json_data: Dict) -> Dict:
     action_counts['dates'] = sorted_dates
 
     return action_counts
-
