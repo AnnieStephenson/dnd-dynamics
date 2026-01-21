@@ -1,13 +1,14 @@
 """
 Semantic Analysis for D&D Campaigns
 
-This module provides semantic analysis functions for measuring creativity, novelty,
-and narrative evolution in D&D gameplay using SBERT embeddings and BERT-based DSI.
+This module provides SBERT-based semantic analysis functions for measuring creativity,
+novelty, and narrative evolution in D&D gameplay.
 
 Key Metrics:
 - Semantic Distance: Distance between consecutive posts using SBERT embeddings
 - Session Novelty: Session-level semantic diversity statistics
-- DSI (Divergent Semantic Integration): BERT-based measure of semantic diversity within scenes
+
+For DSI (Divergent Semantic Integration), see the dsi module.
 """
 
 import pandas as pd
@@ -17,12 +18,10 @@ import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 from tqdm import tqdm
-from sklearn.metrics.pairwise import pairwise_distances, cosine_similarity
+from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.preprocessing import MinMaxScaler
 
 from sentence_transformers import SentenceTransformer
-from transformers import BertTokenizer, BertModel
-import torch
 
 from . import _cache
 
@@ -386,265 +385,6 @@ def analyze_semantic(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
         # Save new results and combine with cached results
         return _cache.save_new_results_and_combine(
             cached_results, new_results, cache_dir, show_progress, "semantic"
-        )
-
-    else:
-        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
-
-
-# ===================================================================
-# DIVERGENT SEMANTIC INTEGRATION (DSI) ANALYSIS (BERT)
-# ===================================================================
-
-# Global cache for BERT models to avoid reloading
-_bert_model_cache = {}
-
-
-def clear_bert_cache():
-    """Clear the BERT model cache to free memory."""
-    global _bert_model_cache
-    _bert_model_cache.clear()
-    print("BERT model cache cleared")
-
-
-def create_word_scenes(messages, target_words=175):
-    """
-    Segment campaign messages into scenes of approximately target_words length.
-    Never split individual messages - only complete messages per scene.
-
-    Args:
-        messages: List of message dictionaries with 'text' field
-        target_words: Target word count per scene (default 175)
-
-    Returns:
-        List of scenes, where each scene is a list of complete messages
-    """
-    scenes = []
-    current_scene = []
-    current_word_count = 0
-
-    for message in messages:
-        # Get text content from message
-        if isinstance(message, dict):
-            text = message.get('text', '')
-        else:
-            # Handle DataFrame row
-            text = getattr(message, 'text', '')
-
-        # Count words in this message
-        message_words = len(text.split()) if text else 0
-
-        # If adding this message would exceed target and we have some content, start new scene
-        if current_word_count + message_words > target_words and current_scene:
-            scenes.append(current_scene)
-            current_scene = [message]
-            current_word_count = message_words
-        else:
-            # Add message to current scene
-            current_scene.append(message)
-            current_word_count += message_words
-
-    # Add the last scene if it has content
-    if current_scene:
-        scenes.append(current_scene)
-
-    return scenes
-
-
-def calculate_dsi_bert(text, model_name="bert-base-uncased"):
-    """
-    Calculate Divergent Semantic Integration using BERT embeddings.
-    Based on Johnson et al. (2023) methodology using layers 6 and 7.
-
-    Args:
-        text: Input text string (scene text)
-        model_name: BERT model to use
-
-    Returns:
-        float: DSI score (average cosine distance between word embeddings)
-    """
-    if not text or not text.strip():
-        return None
-
-    # Initialize BERT model and tokenizer (with caching)
-    if model_name not in _bert_model_cache:
-        print(f"Loading BERT model {model_name} (first time only)...")
-        tokenizer = BertTokenizer.from_pretrained(model_name)
-        model = BertModel.from_pretrained(model_name, output_hidden_states=True)
-        model.eval()
-        _bert_model_cache[model_name] = {'tokenizer': tokenizer, 'model': model}
-        print(f"BERT model {model_name} loaded and cached")
-
-    tokenizer = _bert_model_cache[model_name]['tokenizer']
-    model = _bert_model_cache[model_name]['model']
-
-    # Tokenize input text
-    tokens = tokenizer.tokenize(text)
-
-    # Skip if too few tokens for meaningful analysis
-    if len(tokens) < 5:
-        return None
-
-    # Handle long sequences by truncating
-    max_tokens = 512 - 2  # Account for [CLS] and [SEP] tokens
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-
-    # Convert to input IDs
-    input_ids = tokenizer.convert_tokens_to_ids(['[CLS]'] + tokens + ['[SEP]'])
-    input_tensor = torch.tensor([input_ids])
-
-    # Get BERT embeddings
-    with torch.no_grad():
-        outputs = model(input_tensor)
-        hidden_states = outputs.hidden_states
-
-    # Extract embeddings from layers 6 and 7 (following Johnson et al. methodology)
-    layer_6 = hidden_states[6][0]  # Shape: (seq_len, hidden_size)
-    layer_7 = hidden_states[7][0]  # Shape: (seq_len, hidden_size)
-
-    # Average layers 6 and 7
-    combined_embeddings = (layer_6 + layer_7) / 2
-
-    # Remove [CLS] and [SEP] tokens, keep only actual word embeddings
-    word_embeddings = combined_embeddings[1:-1]  # Shape: (num_tokens, hidden_size)
-
-    # Skip if too few word embeddings
-    if word_embeddings.shape[0] < 2:
-        return None
-
-    # Calculate pairwise cosine similarities
-    embeddings_np = word_embeddings.numpy()
-    cosine_sim_matrix = cosine_similarity(embeddings_np)
-
-    # Extract upper triangle (excluding diagonal) to avoid double counting
-    n = cosine_sim_matrix.shape[0]
-    upper_triangle_indices = np.triu_indices(n, k=1)
-    cosine_similarities = cosine_sim_matrix[upper_triangle_indices]
-
-    # Convert to cosine distances (distance = 1 - similarity)
-    cosine_distances = 1 - cosine_similarities
-
-    # Return average cosine distance as DSI score
-    dsi_score = np.mean(cosine_distances)
-
-    return float(dsi_score)
-
-
-def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str, target_words: int = 175, show_progress: bool = False) -> Optional[Dict]:
-    """
-    Run DSI analysis for a single campaign using DataFrame.
-
-    Args:
-        df: Campaign DataFrame with 'text' column
-        campaign_id: Campaign identifier
-        target_words: Words per scene for DSI calculation
-        show_progress: Whether to show progress indicators
-
-    Returns:
-        Dict with DSI analysis results or None if analysis failed
-    """
-    # Convert DataFrame to list of messages for scene creation
-    messages = []
-    for idx, row in df.iterrows():
-        messages.append({'text': row['text'], 'message_id': idx})
-
-    # Create scenes
-    scenes = create_word_scenes(messages, target_words=target_words)
-
-    # Calculate DSI for each scene
-    scene_dsi_scores = []
-    scene_word_counts = []
-    total_scenes = len(scenes)
-
-    for i, scene in enumerate(scenes):
-        # Combine all message text in this scene
-        scene_text = ' '.join([msg['text'] for msg in scene if msg.get('text')])
-
-        if scene_text.strip():
-            # Calculate DSI score
-            scene_dsi = calculate_dsi_bert(scene_text)
-            scene_dsi_scores.append(scene_dsi)
-
-            # Count words in scene
-            word_count = len(scene_text.split())
-            scene_word_counts.append(word_count)
-        else:
-            scene_dsi_scores.append(np.nan)
-            scene_word_counts.append(0)
-
-    # Calculate time-averaged DSI (excluding NaN values)
-    valid_scores = [score for score in scene_dsi_scores if not np.isnan(score)]
-    time_averaged_dsi = np.mean(valid_scores) if valid_scores else np.nan
-
-    dsi_analysis = {
-        'scene_dsi_scores': scene_dsi_scores,
-        'scene_word_counts': scene_word_counts,
-        'time_averaged_dsi': time_averaged_dsi,
-        'scene_count': total_scenes
-    }
-
-    # Add campaign metadata
-    dsi_analysis['metadata'] = {
-        'campaign_id': campaign_id,
-        'total_messages': len(df),
-    }
-
-    return dsi_analysis
-
-
-def analyze_dsi(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]], target_words: int = 175,
-    show_progress: bool = True,
-    cache_dir: Optional[str] = None,
-    force_refresh: bool = False
-) -> Union[Dict, Dict[str, Dict]]:
-    """
-    Calculate DSI metrics for single or multiple campaigns using DataFrames.
-
-    Args:
-        data: Single DataFrame or dict of DataFrames {campaign_id: df}
-        target_words: Words per scene for DSI calculation
-        show_progress: Whether to show progress for multi-campaign analysis
-        cache_dir: Directory for caching results (defaults to data/processed/dsi_results)
-        force_refresh: Whether to force recomputation even if cached results exist
-
-    Returns:
-        Dict of DSI results for single campaign, or Dict[campaign_id, results] for multiple
-    """
-    if isinstance(data, pd.DataFrame):
-        # Single campaign analysis - no caching for single campaigns
-        campaign_id = "not specified"
-        return _analyze_single_campaign_dsi(data, campaign_id, target_words=target_words, show_progress=False)
-
-    elif isinstance(data, dict):
-        # Multiple campaign analysis with caching support
-
-        # Set default cache directory
-        if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
-            cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_results')
-
-        # Handle caching using helper function
-        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-            data, cache_dir, force_refresh, show_progress, "DSI"
-        )
-
-        # Process missing campaigns
-        new_results = {}
-        if data_to_process:
-            if show_progress and len(data_to_process) > 1:
-                iterator = tqdm(data_to_process.items(), desc="Analyzing campaign DSI", total=len(data_to_process))
-            else:
-                iterator = data_to_process.items()
-
-            for campaign_id, df in iterator:
-                new_results[campaign_id] = _analyze_single_campaign_dsi(
-                    df, campaign_id, target_words=target_words, show_progress=False
-                )
-
-        # Save new results and combine with cached results
-        return _cache.save_new_results_and_combine(
-            cached_results, new_results, cache_dir, show_progress, "DSI"
         )
 
     else:
