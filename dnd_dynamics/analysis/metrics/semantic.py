@@ -1,13 +1,14 @@
 """
-Semantic Analysis for D&D Campaigns
+Semantic Cohesion Analysis for D&D Campaigns
 
-This module provides SBERT-based semantic analysis functions for measuring creativity,
-novelty, and narrative evolution in D&D gameplay.
+This module provides sentence embedding-based semantic analysis functions for measuring
+group cohesion in D&D gameplay using cosine similarity.
 
 Key Metrics:
-- Semantic Distance: Distance between consecutive posts using SBERT embeddings
-- Session Novelty: Session-level semantic diversity statistics
+- Sequential Cohesion: Similarity between consecutive posts (higher = more cohesive flow)
+- Session Cohesion: Within-session semantic similarity statistics
 
+Supports SBERT and MPNet models via sentence-transformers. GPU/MPS accelerated.
 For DSI (Divergent Semantic Integration), see the dsi module.
 """
 
@@ -18,42 +19,85 @@ import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 from tqdm import tqdm
-from sklearn.metrics.pairwise import pairwise_distances
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity
 
+import torch
 from sentence_transformers import SentenceTransformer
 
+from dnd_dynamics import config
 from . import _cache
 
 
+# Global cache for embedding models to avoid reloading
+_embedding_model_cache = {}
+
+
+def _get_device():
+    """Get best available device: CUDA > MPS > CPU."""
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
+
+
+def _get_embedding_model(model_name=None):
+    """Get or load embedding model with device placement."""
+    if model_name is None:
+        model_name = config.SENTENCE_EMBEDDING_MODEL
+
+    if model_name not in _embedding_model_cache:
+        device = _get_device()
+        print(f"Loading embedding model {model_name} on {device}...")
+        model = SentenceTransformer(model_name, device=str(device))
+        _embedding_model_cache[model_name] = {'model': model, 'device': device}
+
+    return _embedding_model_cache[model_name]
+
+
+def clear_embedding_cache():
+    """Clear the embedding model cache to free memory."""
+    global _embedding_model_cache
+    _embedding_model_cache.clear()
+    print("Embedding model cache cleared")
+
+
 # ===================================================================
-# SENTENCE EMBEDDING DISTANCE ANALYSIS (SBERT)
+# SENTENCE EMBEDDING COHESION ANALYSIS
 # ===================================================================
 
 
 def get_embeddings(df: pd.DataFrame,
-                  model_name: str = "all-MiniLM-L6-v2",
+                  model_name: str = None,
                   text_col: str = "text",
-                  cache_dir: Optional[str] = None) -> np.ndarray:
+                  cache_dir: Optional[str] = None,
+                  batch_size: int = None) -> np.ndarray:
     """
-    Generate and cache Sentence-BERT embeddings for text data.
+    Generate and cache sentence embeddings for text data. GPU/MPS accelerated.
 
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame containing text data
-    model_name : str, default "all-MiniLM-L6-v2"
-        Name of the sentence-transformers model to use
+    model_name : str, default None
+        Name of the sentence-transformers model to use. If None, uses config.SENTENCE_EMBEDDING_MODEL
     text_col : str, default "text"
         Column name containing text to embed
     cache_dir : Optional[str], default None
         Directory to cache embeddings. If None, uses data/processed/embeddings_cache/
+    batch_size : int, default None
+        Batch size for encoding. If None, uses config.SENTENCE_EMBEDDING_BATCH_SIZE
 
     Returns
     -------
     np.ndarray
         Array of embeddings with shape (n_texts, embedding_dim)
     """
+    if model_name is None:
+        model_name = config.SENTENCE_EMBEDDING_MODEL
+    if batch_size is None:
+        batch_size = config.SENTENCE_EMBEDDING_BATCH_SIZE
+
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
         cache_dir = str(repo_root / 'data' / 'processed' / 'embeddings_cache')
@@ -73,15 +117,14 @@ def get_embeddings(df: pd.DataFrame,
         with open(cache_file, 'rb') as f:
             return pickle.load(f)
 
-    # Generate embeddings
-    print(f"Generating embeddings using model: {model_name}")
-    model = SentenceTransformer(model_name)
+    # Get model with GPU/MPS support
+    model_cache = _get_embedding_model(model_name)
+    model = model_cache['model']
 
     # Handle empty or very short texts
     processed_texts = [text if len(text.strip()) > 0 else "[EMPTY]" for text in texts]
 
-    # Generate embeddings in batches for memory efficiency
-    batch_size = 32
+    # Generate embeddings in batches
     embeddings = []
 
     for i in range(0, len(processed_texts), batch_size):
@@ -103,18 +146,18 @@ def get_embeddings(df: pd.DataFrame,
 
 
 def get_embeddings_by_label(df: pd.DataFrame,
-                           model_name: str = "all-MiniLM-L6-v2",
+                           model_name: str = None,
                            cache_dir: Optional[str] = None,
                            labels_to_process: List[str] = None) -> Dict[str, np.ndarray]:
     """
-    Generate and cache Sentence-BERT embeddings for text data separated by label.
+    Generate and cache sentence embeddings for text data separated by label. GPU/MPS accelerated.
 
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame containing text data with label information
-    model_name : str, default "all-MiniLM-L6-v2"
-        Name of the sentence-transformers model to use
+    model_name : str, default None
+        Name of the sentence-transformers model to use. If None, uses config.SENTENCE_EMBEDDING_MODEL
     cache_dir : Optional[str], default None
         Directory to cache embeddings. If None, uses data/processed/embeddings_cache/
     labels_to_process : List[str], optional
@@ -125,6 +168,9 @@ def get_embeddings_by_label(df: pd.DataFrame,
     Dict[str, np.ndarray]
         Dictionary mapping label types to embedding arrays
     """
+    if model_name is None:
+        model_name = config.SENTENCE_EMBEDDING_MODEL
+
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
         cache_dir = str(repo_root / 'data' / 'processed' / 'embeddings_cache')
@@ -160,13 +206,13 @@ def get_embeddings_by_label(df: pd.DataFrame,
     return embeddings_by_label
 
 
-def semantic_distance(df: pd.DataFrame,
-                     embeddings: Optional[np.ndarray] = None,
-                     window: int = 1,
-                     metric: str = "cosine",
-                     normalize: bool = True) -> pd.Series:
+def sequential_cohesion(df: pd.DataFrame,
+                        embeddings: Optional[np.ndarray] = None,
+                        window: int = 1) -> pd.Series:
     """
-    Calculate semantic distance between each post and the one `window` steps back.
+    Calculate semantic cohesion between each post and the one `window` steps back.
+
+    Higher values indicate more semantically similar/cohesive sequential posts.
 
     Parameters
     ----------
@@ -176,15 +222,11 @@ def semantic_distance(df: pd.DataFrame,
         Precomputed embeddings. If None, will generate using get_embeddings()
     window : int, default 1
         Number of steps back to compare (1 = previous post)
-    metric : str, default "cosine"
-        Distance metric: "cosine" or "euclidean"
-    normalize : bool, default True
-        Whether to normalize distances to [0,1] range
 
     Returns
     -------
     pd.Series
-        Series of distances with same index as df
+        Series of cosine similarities with same index as df (values in [-1, 1], typically [0, 1])
     """
     if embeddings is None:
         embeddings = get_embeddings(df)
@@ -192,44 +234,31 @@ def semantic_distance(df: pd.DataFrame,
     if len(embeddings) != len(df):
         raise ValueError(f"Embeddings length ({len(embeddings)}) doesn't match DataFrame length ({len(df)})")
 
-    # Calculate pairwise distances
-    distances = []
+    # Calculate pairwise similarities
+    similarities = []
 
     for i in range(len(embeddings)):
         if i < window:
             # Not enough previous posts
-            distances.append(np.nan)
+            similarities.append(np.nan)
         else:
-            # Calculate distance to post `window` steps back
+            # Calculate similarity to post `window` steps back
             current_emb = embeddings[i].reshape(1, -1)
             previous_emb = embeddings[i - window].reshape(1, -1)
 
-            dist = pairwise_distances(current_emb, previous_emb, metric=metric)[0, 0]
-            distances.append(dist)
+            sim = cosine_similarity(current_emb, previous_emb)[0, 0]
+            similarities.append(sim)
 
-    distances = np.array(distances)
-
-    # Normalize to [0,1] if requested
-    if normalize and not np.all(np.isnan(distances)):
-        valid_distances = distances[~np.isnan(distances)]
-        if len(valid_distances) > 0:
-            scaler = MinMaxScaler()
-            distances_scaled = scaler.fit_transform(valid_distances.reshape(-1, 1)).flatten()
-
-            # Put scaled values back
-            result = np.full_like(distances, np.nan)
-            result[~np.isnan(distances)] = distances_scaled
-            distances = result
-
-    return pd.Series(distances, index=df.index, name=f'semantic_distance_w{window}')
+    return pd.Series(similarities, index=df.index, name=f'sequential_cohesion_w{window}')
 
 
-def session_novelty(df: pd.DataFrame,
-                   embeddings: Optional[np.ndarray] = None,
-                   session_col: str = "session_id",
-                   metric: str = "cosine") -> pd.DataFrame:
+def session_cohesion(df: pd.DataFrame,
+                     embeddings: Optional[np.ndarray] = None,
+                     session_col: str = "session_id") -> pd.DataFrame:
     """
-    Calculate session-level novelty metrics based on pairwise semantic distances.
+    Calculate session-level cohesion based on pairwise semantic similarities.
+
+    Higher values indicate more semantically cohesive sessions.
 
     Parameters
     ----------
@@ -239,13 +268,11 @@ def session_novelty(df: pd.DataFrame,
         Precomputed embeddings
     session_col : str, default "session_id"
         Column name containing session identifiers
-    metric : str, default "cosine"
-        Distance metric for embeddings
 
     Returns
     -------
     pd.DataFrame
-        Session-level statistics with columns: mean, median, max, std, count
+        Session-level statistics with columns: mean_similarity, median_similarity, etc.
     """
     if embeddings is None:
         embeddings = get_embeddings(df)
@@ -263,22 +290,24 @@ def session_novelty(df: pd.DataFrame,
             # Skip sessions with only one post
             continue
 
-        # Calculate all pairwise distances within session
-        distances = pairwise_distances(session_embeddings, metric=metric)
+        # Calculate all pairwise similarities within session
+        similarities = cosine_similarity(session_embeddings)
 
         # Get upper triangle (excluding diagonal) to avoid duplicates
-        upper_triangle = np.triu(distances, k=1)
-        pairwise_dists = upper_triangle[upper_triangle > 0]
+        upper_triangle = np.triu(similarities, k=1)
+        # For similarities, we want all non-diagonal upper triangle values
+        mask = np.triu(np.ones_like(similarities, dtype=bool), k=1)
+        pairwise_sims = similarities[mask]
 
-        if len(pairwise_dists) > 0:
+        if len(pairwise_sims) > 0:
             stats = {
                 'session_id': session_id,
-                'mean_distance': np.mean(pairwise_dists),
-                'median_distance': np.median(pairwise_dists),
-                'max_distance': np.max(pairwise_dists),
-                'std_distance': np.std(pairwise_dists),
+                'mean_similarity': np.mean(pairwise_sims),
+                'median_similarity': np.median(pairwise_sims),
+                'min_similarity': np.min(pairwise_sims),
+                'std_similarity': np.std(pairwise_sims),
                 'post_count': len(session_embeddings),
-                'total_comparisons': len(pairwise_dists)
+                'total_comparisons': len(pairwise_sims)
             }
             session_stats.append(stats)
 
@@ -287,7 +316,7 @@ def session_novelty(df: pd.DataFrame,
 
 def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool) -> Dict:
     """
-    Run semantic analysis functions for a single campaign.
+    Run semantic cohesion analysis for a single campaign.
 
     Args:
         df: Loaded campaign DataFrame
@@ -295,7 +324,7 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
         show_progress: Whether to show progress indicators
 
     Returns:
-        Dict with semantic analysis results
+        Dict with semantic cohesion results
     """
     # Check if campaign has sufficient data for analysis
     min_texts_required = 5
@@ -309,13 +338,13 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
     embeddings = get_embeddings(df)
     campaign_results['embeddings'] = embeddings
 
-    # Calculate semantic distances
-    semantic_dists = semantic_distance(df, embeddings=embeddings)
-    campaign_results['semantic_distances'] = semantic_dists
+    # Calculate sequential cohesion (post-to-post similarity)
+    seq_cohesion = sequential_cohesion(df, embeddings=embeddings)
+    campaign_results['sequential_cohesion'] = seq_cohesion
 
-    # Analyze session novelty
-    novelty_results = session_novelty(df, embeddings=embeddings)
-    campaign_results['session_novelty'] = novelty_results
+    # Analyze session cohesion (within-session similarity)
+    sess_cohesion = session_cohesion(df, embeddings=embeddings)
+    campaign_results['session_cohesion'] = sess_cohesion
 
     # Store campaign metadata
     campaign_results['metadata'] = {

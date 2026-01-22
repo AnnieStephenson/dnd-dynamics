@@ -14,4 +14,11 @@ class _Config:
     EXTRACTION_INTRO_WINDOW = 50
     EXTRACTION_PRE_INTRO_TURNS = 10
 
+    # Sentence embedding model for cohesion metrics
+    SENTENCE_EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Can use "all-mpnet-base-v2" for MPNet
+    SENTENCE_EMBEDDING_BATCH_SIZE = 64
+
+    # Session grouping
+    MESSAGES_PER_SESSION = 5
+
 config = _Config()

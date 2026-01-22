@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tqdm import tqdm
 import json
+from dnd_dynamics import config
 from . import data_correction
 
 # ===================================================================
@@ -33,7 +34,7 @@ from . import data_correction
 def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[int] = None,
     show_progress: bool = True,
     return_json: bool = False,
-    messages_per_session: int = 5,
+    messages_per_session: int = None,
     filter_by: Optional[Dict] = None,
     min_turns: int = 5
 ) -> Union[Dict[str, pd.DataFrame], Tuple[Dict[str, pd.DataFrame], Dict]]:
@@ -47,7 +48,8 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         max_campaigns: Maximum number of campaigns to load (None for all)
         show_progress: Whether to show progress indicators
         return_json: If True, return both DataFrames and original JSON data
-        messages_per_session: Number of messages per session for creating session_id column
+        messages_per_session: Number of messages per session for creating session_id column.
+                              If None, uses config.MESSAGES_PER_SESSION
         filter_by: Dict of metadata fields to filter on (LLM games only),
                    e.g. {'model': 'gpt-4o', 'summary_chunk_size': 50}
         min_turns: Minimum number of turns required to include a campaign (default 5)
@@ -56,6 +58,9 @@ def load_campaigns(source: Union[str, List[str], Path], max_campaigns: Optional[
         Dict[str, pd.DataFrame]: Dictionary mapping campaign_id to DataFrame
         OR Tuple[Dict[str, pd.DataFrame], Dict]: (DataFrames, JSON data) if return_json=True
     """
+    if messages_per_session is None:
+        messages_per_session = config.MESSAGES_PER_SESSION
+
     module_dir = Path(__file__).parent.parent.parent  # Go up to repository root
 
     # Handle different source types
