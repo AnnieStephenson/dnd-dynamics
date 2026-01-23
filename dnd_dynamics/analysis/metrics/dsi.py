@@ -241,6 +241,90 @@ def calculate_dsi_bert_batch(texts: List[str], model_name: str = "bert-base-unca
     return results
 
 
+def calculate_player_dsi(df: pd.DataFrame,
+                         player_col: str = "player",
+                         target_words: int = 175,
+                         batch_size: int = 16) -> Dict[str, Dict]:
+    """
+    Calculate DSI for each player's concatenated turns.
+
+    Args:
+        df: Campaign DataFrame with 'text' and player column
+        player_col: Column name for player identification
+        target_words: Words per scene for DSI calculation
+        batch_size: Number of scenes to process in each batch
+
+    Returns:
+        Dict mapping player_name -> {
+            'scene_dsi_scores': [...],
+            'mean_dsi': float,
+            'scene_count': int,
+            'message_count': int
+        }
+    """
+    player_results = {}
+
+    for player_name in df[player_col].unique():
+        if pd.isna(player_name):
+            continue
+
+        # Filter to this player's messages (preserving original order)
+        player_df = df[df[player_col] == player_name]
+
+        if len(player_df) < 2:
+            continue
+
+        # Create word scenes from player's messages
+        messages = [{'text': row['text']} for _, row in player_df.iterrows()]
+        scenes = create_word_scenes(messages, target_words=target_words)
+
+        # Calculate DSI for each scene
+        scene_texts = [' '.join([m['text'] for m in scene if m.get('text')])
+                       for scene in scenes]
+
+        # Process in batches
+        scene_dsi_scores = []
+        for i in range(0, len(scene_texts), batch_size):
+            batch = scene_texts[i:i + batch_size]
+            batch_scores = calculate_dsi_bert_batch(batch)
+            scene_dsi_scores.extend(batch_scores)
+
+        valid_scores = [s for s in scene_dsi_scores if s is not None]
+
+        player_results[player_name] = {
+            'scene_dsi_scores': [s if s is not None else np.nan for s in scene_dsi_scores],
+            'mean_dsi': np.mean(valid_scores) if valid_scores else np.nan,
+            'scene_count': len(scenes),
+            'message_count': len(player_df)
+        }
+
+    return player_results
+
+
+def calculate_dsi_emergence(campaign_dsi: float,
+                            player_dsi_results: Dict[str, Dict]) -> float:
+    """
+    Calculate DSI emergence: campaign DSI minus mean of player DSIs.
+
+    Positive values indicate the group generates more semantic diversity
+    together than individual players do on their own.
+
+    Args:
+        campaign_dsi: Time-averaged DSI for the full campaign
+        player_dsi_results: Dict from calculate_player_dsi()
+
+    Returns:
+        float: DSI emergence score (campaign_dsi - mean_player_dsi)
+    """
+    player_means = [p['mean_dsi'] for p in player_dsi_results.values()
+                    if not np.isnan(p['mean_dsi'])]
+
+    if not player_means or np.isnan(campaign_dsi):
+        return np.nan
+
+    return campaign_dsi - np.mean(player_means)
+
+
 def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str,
                                   target_words: int = 175,
                                   batch_size: int = 16,
@@ -281,11 +365,20 @@ def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str,
     valid_scores = [s for s in scene_dsi_scores if s is not None]
     time_averaged_dsi = np.mean(valid_scores) if valid_scores else np.nan
 
+    # Calculate player-level DSI and emergence
+    player_dsi_results = calculate_player_dsi(df, target_words=target_words, batch_size=batch_size)
+    player_means = [p['mean_dsi'] for p in player_dsi_results.values() if not np.isnan(p['mean_dsi'])]
+    mean_player_dsi = np.mean(player_means) if player_means else np.nan
+    dsi_emergence = calculate_dsi_emergence(time_averaged_dsi, player_dsi_results)
+
     return {
         'scene_dsi_scores': scores_for_stats,
         'scene_word_counts': scene_word_counts,
         'time_averaged_dsi': time_averaged_dsi,
         'scene_count': len(scenes),
+        'player_dsi': player_dsi_results,
+        'mean_player_dsi': mean_player_dsi,
+        'dsi_emergence': dsi_emergence,
         'metadata': {
             'campaign_id': campaign_id,
             'total_messages': len(df),
