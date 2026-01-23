@@ -1,7 +1,412 @@
- # Helper plotting functions
+"""Helper plotting functions for D&D campaign analysis."""
 
+import json
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import cm
+import seaborn as sns
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from .metrics.result import MetricResult
+
+
+# ===================================================================
+# HISTOGRAM PLOTTING
+# ===================================================================
+
+
+def plot_histogram(data,
+                   colors=None,
+                   edgecolor='none',
+                   alpha=0.5,
+                   colormap='viridis',
+                   xlabel=None,
+                   bins=None,
+                   log_bins=False,
+                   log_y=False,
+                   figsize=(4, 4),
+                   ylabel="Counts",
+                   labels=None):
+    """
+    Plot histogram(s) with colors evenly spaced across a colormap.
+
+    Parameters
+    ----------
+    data : array-like or list of array-like
+        Single array/list OR list of arrays/lists to plot as histograms
+    colors : list, optional
+        Specific colors (if None, uses colormap spacing)
+    edgecolor : str
+        Edge color for bars (default: 'none')
+    alpha : float
+        Transparency level (default: 0.5)
+    colormap : str
+        Colormap name (default: 'viridis')
+    xlabel : str, optional
+        X-axis label
+    bins : int, optional
+        Number of bins (default: None uses matplotlib default)
+    log_bins : bool
+        Use log-spaced bins and log x-axis (default: False)
+    log_y : bool
+        Use log scale for y-axis (default: False)
+    figsize : tuple
+        Figure size (default: (4, 4))
+    ylabel : str
+        Y-axis label (default: "Counts")
+    labels : list, optional
+        Labels for each dataset
+    """
+    plt.figure(figsize=figsize)
+
+    # Auto-detect if data is a single array or list of arrays
+    try:
+        if isinstance(data[0], (list, np.ndarray)):
+            data_list = data
+        else:
+            data_list = [data]
+    except:
+        data_list = [data]
+
+    # Remove NaN values from all datasets
+    clean_data_list = []
+    for dataset in data_list:
+        clean_dataset = np.array(dataset)[~np.isnan(np.array(dataset))]
+        clean_data_list.append(clean_dataset)
+
+    n_plots = len(clean_data_list)
+
+    if colors is None:
+        cmap = cm.get_cmap(colormap)
+        if n_plots == 1:
+            colors = [cmap(0.5)]
+        else:
+            colors = [cmap(i / (n_plots - 1)) for i in range(n_plots)]
+
+    # Calculate common bins across all datasets
+    all_data = np.concatenate(clean_data_list)
+
+    if len(all_data) == 0:
+        raise ValueError("All data contains only NaN values")
+
+    if log_bins:
+        positive_data = all_data[all_data > 0]
+        if len(positive_data) == 0:
+            raise ValueError("log_bins=True requires positive values in data")
+        min_val = np.min(positive_data)
+        max_val = np.max(positive_data)
+        if bins is None:
+            bins = 50
+        common_bins = np.logspace(np.log10(min_val), np.log10(max_val), bins)
+    else:
+        if bins is None:
+            bins = 50
+        min_val = np.min(all_data)
+        max_val = np.max(all_data)
+        common_bins = np.linspace(min_val, max_val, bins)
+
+    # Plot all histograms
+    for i, dataset in enumerate(clean_data_list):
+        label = labels[i] if labels is not None else None
+        plt.hist(dataset,
+                 bins=common_bins,
+                 color=colors[i],
+                 edgecolor=edgecolor,
+                 alpha=alpha,
+                 label=label)
+
+    if log_bins:
+        plt.xscale('log')
+    if log_y:
+        plt.yscale('log')
+
+    sns.despine()
+    plt.ylabel(ylabel)
+
+    if xlabel is not None:
+        plt.xlabel(xlabel, clip_on=False)
+
+    # Style axes
+    ax = plt.gca()
+    ax.tick_params(colors='#4a4a4a', width=0.5)
+    ax.spines['left'].set_color('#4a4a4a')
+    ax.spines['left'].set_linewidth(0.5)
+    ax.spines['bottom'].set_color('#4a4a4a')
+    ax.spines['bottom'].set_linewidth(0.5)
+    ax.xaxis.label.set_color('#4a4a4a')
+    ax.yaxis.label.set_color('#4a4a4a')
+
+
+def plot_comparison_histograms(data,
+                               colors=None,
+                               edgecolor='none',
+                               alpha=0.5,
+                               colormap='viridis',
+                               xlabel=None,
+                               bins=None,
+                               log_bins=False,
+                               log_y=False,
+                               labels=None,
+                               figsize=None,
+                               ylabel="Counts"):
+    """
+    Plot comparison histograms with the first dataset appearing in every subplot,
+    and each subsequent dataset compared against it in separate vertical subplots.
+
+    Parameters
+    ----------
+    data : list
+        List of arrays/lists (must have at least 2 datasets)
+    colors : list, optional
+        Specific colors (if None, uses colormap spacing)
+    edgecolor : str
+        Edge color for bars (default: 'none')
+    alpha : float
+        Transparency level (default: 0.5)
+    colormap : str
+        Colormap name (default: 'viridis')
+    xlabel : str, optional
+        X-axis label
+    bins : int, optional
+        Number of bins
+    log_bins : bool
+        Use log-spaced bins and log x-axis (default: False)
+    log_y : bool
+        Use log scale for y-axis (default: False)
+    labels : list, optional
+        Labels for each dataset
+    figsize : tuple, optional
+        Figure size (width, height). If None, auto-calculated
+    ylabel : str
+        Y-axis label (default: "Counts")
+
+    Returns
+    -------
+    fig, axes : tuple
+        Figure and axes objects
+    """
+    if not isinstance(data, list) or len(data) < 2:
+        raise ValueError("data must be a list with at least 2 datasets")
+
+    # Remove NaN values from all datasets
+    clean_data_list = []
+    for dataset in data:
+        clean_dataset = np.array(dataset)[~np.isnan(np.array(dataset))]
+        clean_data_list.append(clean_dataset)
+
+    if any(len(dataset) == 0 for dataset in clean_data_list):
+        raise ValueError("One or more datasets contain only NaN values")
+
+    n_datasets = len(clean_data_list)
+    n_subplots = n_datasets - 1
+
+    if figsize is None:
+        figsize = (8, 3 * n_subplots)
+
+    fig, axes = plt.subplots(n_subplots, 1, figsize=figsize, sharex=True)
+    plt.subplots_adjust(hspace=0)
+
+    if n_subplots == 1:
+        axes = [axes]
+
+    # Set up colors
+    if colors is None:
+        cmap = cm.get_cmap(colormap)
+        colors = [cmap(i / (n_datasets - 1)) for i in range(n_datasets)]
+
+    # Calculate common bins
+    all_data = np.concatenate(clean_data_list)
+
+    if log_bins:
+        positive_data = all_data[all_data > 0]
+        if len(positive_data) == 0:
+            raise ValueError("log_bins=True requires positive values in data")
+        min_val = np.min(positive_data)
+        max_val = np.max(positive_data)
+        if bins is None:
+            bins = 50
+        common_bins = np.logspace(np.log10(min_val), np.log10(max_val), bins)
+    else:
+        if bins is None:
+            bins = 50
+        min_val = np.min(all_data)
+        max_val = np.max(all_data)
+        common_bins = np.linspace(min_val, max_val, bins)
+
+    reference_data = clean_data_list[0]
+    reference_color = colors[0]
+    reference_label = labels[0] if labels is not None else "Reference"
+
+    for i in range(n_subplots):
+        ax = axes[i]
+        comparison_data = clean_data_list[i + 1]
+        comparison_color = colors[i + 1]
+        comparison_label = labels[i + 1] if labels is not None else f"Dataset {i + 1}"
+
+        ax.hist(reference_data, bins=common_bins, color=reference_color,
+                edgecolor=edgecolor, alpha=alpha, label=reference_label)
+        ax.hist(comparison_data, bins=common_bins, color=comparison_color,
+                edgecolor=edgecolor, alpha=alpha, label=comparison_label)
+
+        if log_bins:
+            ax.set_xscale('log')
+        if log_y:
+            ax.set_yscale('log')
+
+        sns.despine(ax=ax)
+
+        if i == n_subplots // 2:
+            ax.set_ylabel(ylabel)
+        else:
+            ax.set_ylabel("")
+
+        ax.tick_params(colors='#4a4a4a', width=0.5, length=2)
+        ax.spines['left'].set_color('#4a4a4a')
+        ax.spines['left'].set_linewidth(0.5)
+        ax.spines['bottom'].set_color('#4a4a4a')
+        ax.spines['bottom'].set_linewidth(0.5)
+        ax.xaxis.label.set_color('#4a4a4a')
+        ax.yaxis.label.set_color('#4a4a4a')
+        ax.set_facecolor("none")
+        ax.minorticks_off()
+
+    if xlabel is not None:
+        axes[-1].set_xlabel(xlabel)
+
+    # Set same y-limits for all subplots
+    max_ylim = max(ax.get_ylim()[1] for ax in axes)
+    for ax in axes:
+        ax.set_ylim(0, max_ylim)
+        ax.set_yticks([0, np.round(max_ylim * .7 / 10) * 10])
+
+    return fig, axes
+
+
+# ===================================================================
+# CATEGORIZATION AND AGGREGATION
+# ===================================================================
+
+
+def categorize_campaigns(campaign_names: List[str],
+                         category_fields: List[str],
+                         metadata_index_path: Optional[str] = None) -> Dict[str, List[str]]:
+    """
+    Categorize campaigns based on metadata fields.
+
+    Args:
+        campaign_names: List of campaign names
+        category_fields: List of metadata fields to use for grouping
+                        e.g., ['model', 'include_player_personalities']
+        metadata_index_path: Path to metadata index JSON (defaults to standard location)
+
+    Returns:
+        Dict mapping category_name -> list of campaign names
+        e.g., {'human': [...], 'model:gpt-4o, include_player_personalities:True': [...]}
+    """
+    if metadata_index_path is None:
+        repo_root = Path(__file__).parent.parent.parent
+        metadata_index_path = repo_root / 'data' / 'llm-games' / 'metadata_index.json'
+
+    with open(metadata_index_path) as f:
+        metadata_index = json.load(f)
+
+    categories = {'human': []}
+
+    for name in campaign_names:
+        if name in metadata_index:
+            metadata = metadata_index[name]
+            parts = []
+            for field in category_fields:
+                value = metadata.get(field)
+                if value is not None:
+                    parts.append(f"{field}:{value}")
+            category_key = ', '.join(parts) if parts else 'llm_other'
+            if category_key not in categories:
+                categories[category_key] = []
+            categories[category_key].append(name)
+        else:
+            categories['human'].append(name)
+
+    return categories
+
+
+def aggregate_by_category(metric_data: List[np.ndarray],
+                          campaign_names: List[str],
+                          categories: Dict[str, List[str]],
+                          category_order: Optional[List[str]] = None) -> Tuple[List[np.ndarray], List[str]]:
+    """
+    Aggregate metric data by category.
+
+    Args:
+        metric_data: List of metric arrays, one per campaign (in same order as campaign_names)
+        campaign_names: List of campaign names corresponding to metric_data
+        categories: Dict from categorize_campaigns()
+        category_order: Optional list specifying order of categories in output
+
+    Returns:
+        Tuple of (aggregated_data, category_order) where aggregated_data is a list of
+        concatenated arrays, one per category
+    """
+    name_to_idx = {name: i for i, name in enumerate(campaign_names)}
+
+    if category_order is None:
+        category_order = ['human'] + sorted(k for k in categories.keys() if k != 'human')
+
+    result = []
+    for cat in category_order:
+        cat_names = categories.get(cat, [])
+        if cat_names:
+            cat_data = [metric_data[name_to_idx[n]] for n in cat_names if n in name_to_idx]
+            result.append(np.concatenate(cat_data) if cat_data else np.array([]))
+        else:
+            result.append(np.array([]))
+
+    return result, category_order
+
+
+def aggregate_metric(results: Dict[str, MetricResult],
+                     campaign_names: List[str],
+                     categories: Dict[str, List[str]],
+                     category_order: List[str],
+                     metric_name: str) -> Tuple[List[np.ndarray], List[str]]:
+    """
+    Aggregate any metric (series or summary) across campaigns by category.
+    Auto-detects whether metric_name is in series or summary.
+
+    Args:
+        results: Dict mapping campaign_name -> MetricResult
+        campaign_names: List of campaign names to process
+        categories: Dict mapping category_name -> list of campaign names
+        category_order: List of categories in display order
+        metric_name: Name of metric to aggregate (checks series first, then summary)
+
+    Returns:
+        Tuple of (aggregated_values, category_order) where aggregated_values[i]
+        is the concatenated array for category_order[i]
+    """
+    values = []
+    for name in campaign_names:
+        if name not in results or results[name] is None:
+            values.append(np.array([]))
+            continue
+
+        result = results[name]
+        if metric_name in result.series:
+            values.append(result.series[metric_name])
+        elif metric_name in result.summary:
+            # Wrap scalar in array for aggregation
+            values.append(np.array([result.summary[metric_name]]))
+        else:
+            values.append(np.array([]))
+
+    return aggregate_by_category(values, campaign_names, categories, category_order)
+
+
+# ===================================================================
+# TIMELINE AND ANALYSIS PLOTS
+# ===================================================================
 
 def plot_distance_timeline(df: pd.DataFrame, 
                           distance_col: str = "semantic_distance_w1",

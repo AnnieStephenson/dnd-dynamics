@@ -26,6 +26,7 @@ from sentence_transformers import SentenceTransformer
 
 from dnd_dynamics import config
 from . import _cache
+from .result import MetricResult
 
 
 # Global cache for embedding models to avoid reloading
@@ -314,7 +315,7 @@ def session_cohesion(df: pd.DataFrame,
     return pd.DataFrame(session_stats)
 
 
-def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool) -> Dict:
+def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool) -> Optional[MetricResult]:
     """
     Run semantic cohesion analysis for a single campaign.
 
@@ -324,7 +325,7 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
         show_progress: Whether to show progress indicators
 
     Returns:
-        Dict with semantic cohesion results
+        MetricResult with semantic cohesion results, or None if insufficient data
     """
     # Check if campaign has sufficient data for analysis
     min_texts_required = 5
@@ -332,89 +333,78 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
         print(f"Skipping semantic analysis for {campaign_id}: insufficient data ({len(df)} texts, minimum {min_texts_required} required)")
         return None
 
-    campaign_results = {}
-
     # Get embeddings for all text
     embeddings = get_embeddings(df)
-    campaign_results['embeddings'] = embeddings
 
     # Calculate sequential cohesion (post-to-post similarity)
     seq_cohesion = sequential_cohesion(df, embeddings=embeddings)
-    campaign_results['sequential_cohesion'] = seq_cohesion
 
     # Analyze session cohesion (within-session similarity)
     sess_cohesion = session_cohesion(df, embeddings=embeddings)
-    campaign_results['session_cohesion'] = sess_cohesion
 
-    # Store campaign metadata
-    campaign_results['metadata'] = {
-        'campaign_id': campaign_id,
-        'total_messages': len(df),
-        'unique_players': df['player'].nunique(),
-        'date_range': {
-            'start': df['date'].min().isoformat() if not df['date'].isna().all() else None,
-            'end': df['date'].max().isoformat() if not df['date'].isna().all() else None
+    return MetricResult(
+        series={
+            'sequential_cohesion': seq_cohesion.dropna().values,
+            'session_cohesion': sess_cohesion['mean_similarity'].values,
+        },
+        summary={
+            'mean_sequential_cohesion': float(seq_cohesion.mean()),
+            'mean_session_cohesion': float(sess_cohesion['mean_similarity'].mean()),
+        },
+        metadata={
+            'campaign_id': campaign_id,
+            'total_messages': len(df),
+            'unique_players': df['player'].nunique(),
         }
-    }
-
-    return campaign_results
+    )
 
 
-def analyze_semantic(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_semantic(data: Dict[str, pd.DataFrame],
     show_progress: bool = True,
     cache_dir: Optional[str] = None,
     force_refresh: bool = False
-) -> Union[Dict, Dict[str, Dict]]:
+) -> Dict[str, MetricResult]:
     """
-    Analyze semantic metrics for single or multiple campaigns.
+    Analyze semantic metrics for campaigns.
 
     Args:
-        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        data: Dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
         cache_dir: Directory for caching results (defaults to data/processed/semantic_results)
         force_refresh: Whether to force recomputation even if cached results exist
 
     Returns:
-        Dict of results for single campaign, or Dict[campaign_id, results] for multiple
+        Dict[campaign_id, MetricResult]
     """
-    if isinstance(data, pd.DataFrame):
-        # Single campaign analysis - no caching for single campaigns
-        campaign_id = "not specified"
-        return _analyze_single_campaign_semantic(data, campaign_id, show_progress=False)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected Dict[str, pd.DataFrame], got {type(data)}")
 
-    elif isinstance(data, dict):
-        # Multiple campaign analysis with caching support
+    # Set default cache directory
+    if cache_dir is None:
+        repo_root = Path(__file__).parent.parent.parent.parent
+        cache_dir = str(repo_root / 'data' / 'processed' / 'semantic_results')
 
-        # Set default cache directory
-        if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
-            cache_dir = str(repo_root / 'data' / 'processed' / 'semantic_results')
+    # Handle caching
+    cached_results, data_to_process = _cache.handle_multi_campaign_caching(
+        data, cache_dir, force_refresh, show_progress, "semantic"
+    )
 
-        # Handle caching using helper function
-        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-            data, cache_dir, force_refresh, show_progress, "semantic"
-        )
+    # Process missing campaigns
+    new_results = {}
+    if data_to_process:
+        if show_progress and len(data_to_process) > 1:
+            iterator = tqdm(data_to_process.items(), desc="Analyzing semantic", total=len(data_to_process))
+        else:
+            iterator = data_to_process.items()
 
-        # Process missing campaigns
-        new_results = {}
-        if data_to_process:
-            if show_progress and len(data_to_process) > 1:
-                iterator = tqdm(data_to_process.items(), desc="Analyzing semantic", total=len(data_to_process))
-            else:
-                iterator = data_to_process.items()
+        for campaign_id, df in iterator:
+            result = _analyze_single_campaign_semantic(
+                df, campaign_id, show_progress=False
+            )
+            # Only include campaigns that had sufficient data
+            if result is not None:
+                new_results[campaign_id] = result
 
-            for campaign_id, df in iterator:
-                result = _analyze_single_campaign_semantic(
-                    df, campaign_id, show_progress=False
-                )
-                # Only include campaigns that had sufficient data
-                if result is not None:
-                    new_results[campaign_id] = result
-
-        # Save new results and combine with cached results
-        return _cache.save_new_results_and_combine(
-            cached_results, new_results, cache_dir, show_progress, "semantic"
-        )
-
-    else:
-        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+    return _cache.save_new_results_and_combine(
+        cached_results, new_results, cache_dir, show_progress, "semantic"
+    )

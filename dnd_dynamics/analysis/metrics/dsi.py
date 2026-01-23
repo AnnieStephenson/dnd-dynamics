@@ -20,6 +20,7 @@ from transformers import BertTokenizer, BertModel
 import torch
 
 from . import _cache
+from .result import MetricResult
 
 
 # Global cache for BERT models to avoid reloading
@@ -328,7 +329,7 @@ def calculate_dsi_emergence(campaign_dsi: float,
 def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str,
                                   target_words: int = 175,
                                   batch_size: int = 16,
-                                  show_progress: bool = False) -> Optional[Dict]:
+                                  show_progress: bool = False) -> MetricResult:
     """
     Run DSI analysis for a single campaign using batched inference.
 
@@ -340,18 +341,16 @@ def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str,
         show_progress: Whether to show progress indicators
 
     Returns:
-        Dict with DSI analysis results or None if analysis failed
+        MetricResult with DSI analysis results
     """
     messages = [{'text': row['text'], 'message_id': idx} for idx, row in df.iterrows()]
     scenes = create_word_scenes(messages, target_words=target_words)
 
     # Prepare scene texts
     scene_texts = []
-    scene_word_counts = []
     for scene in scenes:
         scene_text = ' '.join([msg['text'] for msg in scene if msg.get('text')])
         scene_texts.append(scene_text)
-        scene_word_counts.append(len(scene_text.split()) if scene_text else 0)
 
     # Process in batches
     scene_dsi_scores = []
@@ -360,43 +359,54 @@ def _analyze_single_campaign_dsi(df: pd.DataFrame, campaign_id: str,
         batch_scores = calculate_dsi_bert_batch(batch)
         scene_dsi_scores.extend(batch_scores)
 
-    # Convert None to np.nan for statistics
-    scores_for_stats = [s if s is not None else np.nan for s in scene_dsi_scores]
-    valid_scores = [s for s in scene_dsi_scores if s is not None]
-    time_averaged_dsi = np.mean(valid_scores) if valid_scores else np.nan
+    # Filter valid scores
+    valid_scores = [s for s in scene_dsi_scores if s is not None and not np.isnan(s)]
+    time_averaged_dsi = float(np.mean(valid_scores)) if valid_scores else np.nan
 
     # Calculate player-level DSI and emergence
     player_dsi_results = calculate_player_dsi(df, target_words=target_words, batch_size=batch_size)
     player_means = [p['mean_dsi'] for p in player_dsi_results.values() if not np.isnan(p['mean_dsi'])]
-    mean_player_dsi = np.mean(player_means) if player_means else np.nan
+    mean_player_dsi = float(np.mean(player_means)) if player_means else np.nan
     dsi_emergence = calculate_dsi_emergence(time_averaged_dsi, player_dsi_results)
 
-    return {
-        'scene_dsi_scores': scores_for_stats,
-        'scene_word_counts': scene_word_counts,
-        'time_averaged_dsi': time_averaged_dsi,
-        'scene_count': len(scenes),
-        'player_dsi': player_dsi_results,
-        'mean_player_dsi': mean_player_dsi,
-        'dsi_emergence': dsi_emergence,
-        'metadata': {
+    # Build player-level MetricResults
+    by_player = {}
+    for player_name, p in player_dsi_results.items():
+        player_valid = [s for s in p['scene_dsi_scores'] if not np.isnan(s)]
+        by_player[player_name] = MetricResult(
+            series={'dsi_scores': np.array(player_valid)},
+            summary={'mean_dsi': float(p['mean_dsi']) if not np.isnan(p['mean_dsi']) else np.nan},
+        )
+
+    return MetricResult(
+        series={
+            'dsi_scores': np.array(valid_scores),
+        },
+        summary={
+            'time_averaged_dsi': time_averaged_dsi,
+            'mean_player_dsi': mean_player_dsi,
+            'dsi_emergence': float(dsi_emergence) if not np.isnan(dsi_emergence) else np.nan,
+        },
+        by_player=by_player,
+        metadata={
             'campaign_id': campaign_id,
             'total_messages': len(df),
+            'scene_count': len(scenes),
         }
-    }
+    )
 
 
-def analyze_dsi(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_dsi(data: Dict[str, pd.DataFrame],
                 target_words: int = 175,
                 batch_size: int = 16,
                 show_progress: bool = True,
                 cache_dir: Optional[str] = None,
-                force_refresh: bool = False) -> Union[Dict, Dict[str, Dict]]:
+                force_refresh: bool = False) -> Dict[str, MetricResult]:
     """
-    Calculate DSI metrics for single or multiple campaigns using DataFrames.
+    Calculate DSI metrics for campaigns.
 
     Args:
-        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        data: Dict of DataFrames {campaign_id: df}
         target_words: Words per scene for DSI calculation
         batch_size: Number of scenes to process in each forward pass
         show_progress: Whether to show progress for multi-campaign analysis
@@ -404,39 +414,32 @@ def analyze_dsi(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
         force_refresh: Whether to force recomputation even if cached results exist
 
     Returns:
-        Dict of DSI results for single campaign, or Dict[campaign_id, results] for multiple
+        Dict[campaign_id, MetricResult]
     """
-    if isinstance(data, pd.DataFrame):
-        return _analyze_single_campaign_dsi(data, "not specified",
-                                            target_words=target_words,
-                                            batch_size=batch_size,
-                                            show_progress=False)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected Dict[str, pd.DataFrame], got {type(data)}")
 
-    elif isinstance(data, dict):
-        if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent.parent
-            cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_results')
+    if cache_dir is None:
+        repo_root = Path(__file__).parent.parent.parent.parent
+        cache_dir = str(repo_root / 'data' / 'processed' / 'dsi_results')
 
-        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-            data, cache_dir, force_refresh, show_progress, "DSI"
-        )
+    cached_results, data_to_process = _cache.handle_multi_campaign_caching(
+        data, cache_dir, force_refresh, show_progress, "DSI"
+    )
 
-        new_results = {}
-        if data_to_process:
-            if show_progress and len(data_to_process) > 1:
-                iterator = tqdm(data_to_process.items(), desc="Analyzing campaign DSI", total=len(data_to_process))
-            else:
-                iterator = data_to_process.items()
+    new_results = {}
+    if data_to_process:
+        if show_progress and len(data_to_process) > 1:
+            iterator = tqdm(data_to_process.items(), desc="Analyzing campaign DSI", total=len(data_to_process))
+        else:
+            iterator = data_to_process.items()
 
-            for campaign_id, df in iterator:
-                new_results[campaign_id] = _analyze_single_campaign_dsi(
-                    df, campaign_id, target_words=target_words,
-                    batch_size=batch_size, show_progress=False
-                )
+        for campaign_id, df in iterator:
+            new_results[campaign_id] = _analyze_single_campaign_dsi(
+                df, campaign_id, target_words=target_words,
+                batch_size=batch_size, show_progress=False
+            )
 
-        return _cache.save_new_results_and_combine(
-            cached_results, new_results, cache_dir, show_progress, "DSI"
-        )
-
-    else:
-        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+    return _cache.save_new_results_and_combine(
+        cached_results, new_results, cache_dir, show_progress, "DSI"
+    )

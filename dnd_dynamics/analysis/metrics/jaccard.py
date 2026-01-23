@@ -19,67 +19,59 @@ from typing import Dict, List, Optional, Union
 from tqdm import tqdm
 
 from . import _cache
+from .result import MetricResult
 
 
-def analyze_jaccard(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_jaccard(data: Dict[str, pd.DataFrame],
                     show_progress: bool = True,
                     cache_dir: Optional[str] = None,
-                    force_refresh: bool = False) -> Union[Dict, Dict[str, Dict]]:
+                    force_refresh: bool = False) -> Dict[str, MetricResult]:
     """
-    Calculate Jaccard similarity cohesion metrics for single or multiple campaigns.
+    Calculate Jaccard similarity cohesion metrics for campaigns.
 
     Args:
-        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        data: Dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
         cache_dir: Directory for caching results (defaults to data/processed/cohesion_results)
         force_refresh: Whether to force recomputation even if cached results exist
 
     Returns:
-        Dict of cohesion results for single campaign, or Dict[campaign_id, results] for multiple
+        Dict[campaign_id, MetricResult]
     """
-    if isinstance(data, pd.DataFrame):
-        # Single campaign analysis - no caching for single campaigns
-        campaign_id = "not specified"
-        return _analyze_single_campaign(data, campaign_id, show_progress=False)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected Dict[str, pd.DataFrame], got {type(data)}")
 
-    elif isinstance(data, dict):
-        # Multiple campaign analysis with caching support
+    # Set default cache directory
+    if cache_dir is None:
+        repo_root = Path(__file__).parent.parent.parent.parent
+        cache_dir = str(repo_root / 'data' / 'processed' / 'cohesion_results')
 
-        # Set default cache directory
-        if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
-            cache_dir = str(repo_root / 'data' / 'processed' / 'cohesion_results')
+    # Handle caching
+    cached_results, data_to_process = _cache.handle_multi_campaign_caching(
+        data, cache_dir, force_refresh, show_progress, "jaccard"
+    )
 
-        # Handle caching using helper function
-        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-            data, cache_dir, force_refresh, show_progress, "jaccard"
-        )
+    # Process missing campaigns
+    new_results = {}
+    if data_to_process:
+        if show_progress and len(data_to_process) > 1:
+            iterator = tqdm(data_to_process.items(), desc="Analyzing campaign cohesion", total=len(data_to_process))
+        else:
+            iterator = data_to_process.items()
 
-        # Process missing campaigns
-        new_results = {}
-        if data_to_process:
-            if show_progress and len(data_to_process) > 1:
-                iterator = tqdm(data_to_process.items(), desc="Analyzing campaign cohesion", total=len(data_to_process))
-            else:
-                iterator = data_to_process.items()
+        for campaign_id, df in iterator:
+            new_results[campaign_id] = _analyze_single_campaign(
+                df, campaign_id, show_progress=False
+            )
 
-            for campaign_id, df in iterator:
-                new_results[campaign_id] = _analyze_single_campaign(
-                    df, campaign_id, show_progress=False
-                )
-
-        # Save new results and combine with cached results
-        return _cache.save_new_results_and_combine(
-            cached_results, new_results, cache_dir, show_progress, "jaccard"
-        )
-
-    else:
-        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+    return _cache.save_new_results_and_combine(
+        cached_results, new_results, cache_dir, show_progress, "jaccard"
+    )
 
 
 def _analyze_single_campaign(df: pd.DataFrame,
                              campaign_id: str,
-                             show_progress: bool = False) -> Optional[Dict]:
+                             show_progress: bool = False) -> Optional[MetricResult]:
     """
     Run Jaccard cohesion analysis for a single campaign using DataFrame.
 
@@ -89,7 +81,7 @@ def _analyze_single_campaign(df: pd.DataFrame,
         show_progress: Whether to show progress indicators
 
     Returns:
-        Dict with cohesion analysis results or None if analysis failed
+        MetricResult with cohesion analysis results or None if analysis failed
     """
     # Check required columns
     required_cols = ['text', 'player']
@@ -114,7 +106,6 @@ def _analyze_single_campaign(df: pd.DataFrame,
         return None
 
     session_cohesion_scores = []
-    session_metadata = []
 
     sessions = df_clean[session_col].unique()
     sessions = [s for s in sessions if not pd.isna(s)]
@@ -132,38 +123,32 @@ def _analyze_single_campaign(df: pd.DataFrame,
 
         # Calculate cohesion based on player count
         if len(session_players) == 2:
-            cohesion_score, alignment_type = _calculate_dyadic_cohesion(
+            cohesion_score, _ = _calculate_dyadic_cohesion(
                 session_df, 'text', 'player')
         else:
-            cohesion_score, alignment_type = _calculate_group_cohesion(
+            cohesion_score, _ = _calculate_group_cohesion(
                 session_df, 'text', 'player')
 
         session_cohesion_scores.append(cohesion_score)
-        session_metadata.append({
-            'session_id': session_id,
-            'player_count': len(session_players),
-            'message_count': len(session_df),
-            'alignment_type': alignment_type
-        })
 
     if not session_cohesion_scores:
         print(f"No valid sessions found for cohesion analysis in {campaign_id}")
         return None
 
-    cohesion_analysis = {
-        'session_cohesion_scores': session_cohesion_scores,
-        'session_metadata': session_metadata,
-        'session_count': len(session_cohesion_scores)
-    }
-
-    # Add campaign metadata
-    cohesion_analysis['metadata'] = {
-        'campaign_id': campaign_id,
-        'total_messages': len(df),
-        'total_players': unique_players
-    }
-
-    return cohesion_analysis
+    return MetricResult(
+        series={
+            'jaccard_session': np.array(session_cohesion_scores),
+        },
+        summary={
+            'mean_jaccard': float(np.mean(session_cohesion_scores)),
+        },
+        metadata={
+            'campaign_id': campaign_id,
+            'total_messages': len(df),
+            'total_players': unique_players,
+            'session_count': len(session_cohesion_scores),
+        }
+    )
 
 
 def _calculate_dyadic_cohesion(session_df: pd.DataFrame,

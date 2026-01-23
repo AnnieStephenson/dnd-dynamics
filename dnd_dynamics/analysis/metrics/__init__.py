@@ -12,6 +12,7 @@ from .basic import analyze_basic_metrics
 from .jaccard import analyze_jaccard
 from .semantic import analyze_semantic
 from .dsi import analyze_dsi
+from .result import MetricResult
 
 
 def analyze_all(data, metrics=None, **kwargs):

@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from .. import data_loading as dl
 from . import _cache
+from .result import MetricResult
 from tqdm import tqdm
 
 # ===================================================================
 # User facing multi-parameter and/or multi campaign
 # ===================================================================
 
-def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> Dict:
+def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> MetricResult:
     """
     Run all basic analysis functions for a single campaign.
 
@@ -27,76 +28,75 @@ def _analyze_single_campaign_basic_metrics(df: pd.DataFrame) -> Dict:
         df: Campaign DataFrame
 
     Returns:
-        Dict with basic analysis results
+        MetricResult with basic analysis results
     """
-    return {
-        'time_intervals_overall': analyze_time_intervals(df, by_player=False),
-        'time_intervals_by_player': analyze_time_intervals(df, by_player=True),
-        'cumulative_posts_overall': analyze_cumulative_posts(df, by_player=False),
-        'cumulative_posts_by_player': analyze_cumulative_posts(df, by_player=True),
-        'unique_players_characters': analyze_unique_players_characters(df),
-        'post_lengths_overall': analyze_post_lengths(df, by_player=False),
-        'post_lengths_by_player': analyze_post_lengths(df, by_player=True),
-        'post_lengths_by_label_overall': analyze_post_lengths_by_label(df, by_player=False),
-        'post_lengths_by_label_by_player': analyze_post_lengths_by_label(df, by_player=True),
-        'character_mentions': analyze_character_mentions(df),
-        'dice_roll_frequency': analyze_dice_roll_frequency(df),
-        'summary_report': generate_summary_report(df)
-    }
+    post_lengths = analyze_post_lengths(df, by_player=False)
+    time_intervals = analyze_time_intervals(df, by_player=False)
+    dice_roll = analyze_dice_roll_frequency(df)
+
+    return MetricResult(
+        series={
+            'post_lengths': np.array(post_lengths['overall']['word_counts_data']),
+            'time_intervals': np.array(time_intervals['overall']['intervals_data']),
+        },
+        summary={
+            'mean_post_length': float(post_lengths['overall']['mean_words']),
+            'median_post_length': float(post_lengths['overall']['median_words']),
+            'mean_time_interval': float(time_intervals['overall']['mean_hours']),
+            'median_time_interval': float(time_intervals['overall']['median_hours']),
+            'dice_roll_pct': float(dice_roll['roll_percentage']),
+        },
+        metadata={
+            'total_messages': len(df),
+            'unique_players': df['player'].nunique(),
+        }
+    )
 
 
-def analyze_basic_metrics(data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+def analyze_basic_metrics(data: Dict[str, pd.DataFrame],
     show_progress: bool = True,
     cache_dir: Optional[str] = None,
     force_refresh: bool = False
-) -> Union[Dict, Dict[str, Dict]]:
+) -> Dict[str, MetricResult]:
     """
-    Analyze basic metrics for single or multiple campaigns using DataFrames.
+    Analyze basic metrics for campaigns.
 
     Args:
-        data: Single DataFrame or dict of DataFrames {campaign_id: df}
+        data: Dict of DataFrames {campaign_id: df}
         show_progress: Whether to show progress for multi-campaign analysis
         cache_dir: Directory for caching results (defaults to data/processed/basic_results)
         force_refresh: Whether to force recomputation even if cached results exist
 
     Returns:
-        Dict of basic metrics for single campaign, or Dict[campaign_id, metrics] for multiple
+        Dict[campaign_id, MetricResult]
     """
-    if isinstance(data, pd.DataFrame):
-        # Single campaign analysis - no caching for single campaigns
-        return _analyze_single_campaign_basic_metrics(data)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected Dict[str, pd.DataFrame], got {type(data)}")
 
-    elif isinstance(data, dict):
-        # Multiple campaign analysis with caching support
+    # Set default cache directory
+    if cache_dir is None:
+        repo_root = Path(__file__).parent.parent.parent.parent
+        cache_dir = str(repo_root / 'data' / 'processed' / 'basic_results')
 
-        # Set default cache directory
-        if cache_dir is None:
-            repo_root = Path(__file__).parent.parent.parent.parent  # Go up to repository root
-            cache_dir = str(repo_root / 'data' / 'processed' / 'basic_results')
+    # Handle caching
+    cached_results, data_to_process = _cache.handle_multi_campaign_caching(
+        data, cache_dir, force_refresh, show_progress, "basic metrics"
+    )
 
-        # Handle caching using helper function
-        cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-            data, cache_dir, force_refresh, show_progress, "basic metrics"
-        )
+    # Process missing campaigns
+    new_results = {}
+    if data_to_process:
+        if show_progress and len(data_to_process) > 1:
+            iterator = tqdm(data_to_process.items(), desc="Analyzing campaigns", total=len(data_to_process))
+        else:
+            iterator = data_to_process.items()
 
-        # Process missing campaigns
-        new_results = {}
-        if data_to_process:
-            if show_progress and len(data_to_process) > 1:
-                iterator = tqdm(data_to_process.items(), desc="Analyzing campaigns", total=len(data_to_process))
-            else:
-                iterator = data_to_process.items()
+        for campaign_id, df in iterator:
+            new_results[campaign_id] = _analyze_single_campaign_basic_metrics(df)
 
-            for campaign_id, df in iterator:
-                new_results[campaign_id] = _analyze_single_campaign_basic_metrics(df)
-
-        # Save new results and combine with cached results
-        return _cache.save_new_results_and_combine(
-            cached_results, new_results, cache_dir, show_progress, "basic metrics"
-        )
-
-    else:
-        raise ValueError(f"Unsupported data type: {type(data)}. Expected pd.DataFrame or Dict[str, pd.DataFrame]")
+    return _cache.save_new_results_and_combine(
+        cached_results, new_results, cache_dir, show_progress, "basic metrics"
+    )
 
 
 def list_campaigns_by_size(campaign_dataframes: Dict[str, pd.DataFrame],
