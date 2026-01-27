@@ -1,11 +1,12 @@
 """
-LLM Conflict Analysis for D&D Campaigns
+LLM Humor Analysis for D&D Campaigns
 
-This module uses a 2-step LLM approach to extract and rate interpersonal
-conflict episodes in campaign transcripts:
-1. Extract conflict episodes from text (with sliding windows for large campaigns)
-2. Rate each episode for intensity (1-5)
+This module uses a 2-step LLM approach to extract and rate humor episodes
+in campaign transcripts:
+1. Extract humor episodes from text (with sliding windows for large campaigns)
+2. Rate each episode for originality (1-5)
 
+Also identifies recurring/inside jokes and tracks their occurrences.
 Results are aggregated by fixed-size chunks for time-series analysis.
 """
 
@@ -14,7 +15,7 @@ import pandas as pd
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 import litellm
@@ -27,27 +28,34 @@ from .result import MetricResult
 
 
 @dataclass
-class ConflictEpisode:
+class HumorEpisode:
     start_turn: int  # DataFrame index
     end_turn: int    # DataFrame index
     description: str
     participants: List[str]
-    intensity: int  # 1-5
+    originality: int  # 1-5
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
+    joke_id: Optional[str]  # For linking recurrent jokes
+    is_recurring: bool  # Whether this references an earlier joke
+    recurring_reference: Optional[str]  # Description of original joke if recurring
 
 
-EXTRACTION_PROMPT = '''You are analyzing a tabletop roleplaying game transcript for interpersonal conflicts between players/characters.
+EXTRACTION_PROMPT = '''You are analyzing a tabletop roleplaying game transcript for humor and jokes.
 
-Identify any conflict episodes - moments where participants disagree, argue, or have tension. Focus on:
-- Player-to-player disagreements (in or out of character)
-- Character-to-character conflicts that reflect real tension
-- Disputes about rules, decisions, or direction
+Identify humor episodes - moments of intentional comedy, jokes, or playful banter. Include:
+- Standalone jokes or witty comments (can be single turn)
+- Jokes with reactions (joke + laughter/appreciation responses)
+- Collaborative humor (players building on each other's jokes)
+- In-character comedic moments
+- Puns, wordplay, or clever references
 
 Do NOT include:
-- In-game combat with NPCs/monsters
-- Friendly banter or joking
-- In-character roleplay conflict that is clearly collaborative storytelling
+- Routine friendly greetings
+- Unintentional humor or mistakes
+- Sarcasm meant as criticism
+
+Also identify RECURRING JOKES (inside jokes) - humor that references earlier jokes or running gags in the campaign. Mark these with a consistent label.
 
 ## Transcript (turns {start_turn} to {end_turn})
 
@@ -55,24 +63,25 @@ Do NOT include:
 
 ## Response Format
 
-If no conflicts found, respond with: NO_CONFLICTS_FOUND
+If no humor found, respond with: NO_HUMOR_FOUND
 
-Otherwise, list each conflict episode:
+Otherwise, list each humor episode:
 
 EPISODE 1:
 Start turn: [number]
 End turn: [number]
-Description: [1-2 sentence description of what the conflict is about]
-Participants: [comma-separated list of player/character names involved]
+Description: [Brief description of what makes it funny]
+Participants: [comma-separated list]
+Recurring: [NO or YES - "references <brief description of original joke>"]
 
 EPISODE 2:
 ...
 '''
 
 
-RATING_PROMPT = '''Rate this conflict episode from a tabletop roleplaying game.
+RATING_PROMPT = '''Rate this humor episode from a tabletop roleplaying game.
 
-## Conflict Episode (turns {start_turn} to {end_turn})
+## Humor Episode (turns {start_turn} to {end_turn})
 
 {episode_text}
 
@@ -81,22 +90,22 @@ RATING_PROMPT = '''Rate this conflict episode from a tabletop roleplaying game.
 
 ## Rating
 
-**Intensity** (1-5):
-- 1: Mild preference difference, resolved immediately
-- 2: Minor disagreement, brief discussion
-- 3: Real disagreement with back-and-forth, but cordial
-- 4: Heated exchange, raised emotions
-- 5: Heated argument with strong emotions and relationship strain
+**Originality** (1-5):
+- 1: Very common joke type, predictable punchline
+- 2: Standard humor, slightly predictable
+- 3: Moderately original, some unexpected elements
+- 4: Creative and unexpected
+- 5: Highly original, surprising or clever twist
 
 Use the full 1-5 range.
 
 ## Response Format
-Intensity: [1-5]
+Originality: [1-5]
 Reasoning: [1 sentence]
 '''
 
 
-def format_turns_for_conflict(df: pd.DataFrame, start_idx: int, end_idx: int) -> str:
+def format_turns_for_humor(df: pd.DataFrame, start_idx: int, end_idx: int) -> str:
     """
     Format DataFrame rows as readable text with character names.
 
@@ -117,9 +126,9 @@ def parse_extraction_response(response_text: str, window_start: int, window_end:
     """
     Parse LLM extraction response to get episode dictionaries.
 
-    Returns list of dicts with: start_turn, end_turn, description, participants
+    Returns list of dicts with: start_turn, end_turn, description, participants, is_recurring, recurring_reference
     """
-    if 'NO_CONFLICTS_FOUND' in response_text.upper():
+    if 'NO_HUMOR_FOUND' in response_text.upper():
         return []
 
     episodes = []
@@ -145,10 +154,29 @@ def parse_extraction_response(response_text: str, window_start: int, window_end:
             episode['description'] = desc_match.group(1).strip()
 
         # Parse participants
-        part_match = re.search(r'Participants:\s*(.+?)(?=\n|$)', match, re.IGNORECASE)
+        part_match = re.search(r'Participants:\s*(.+?)(?=\n|Recurring:|$)', match, re.IGNORECASE)
         if part_match:
             participants_str = part_match.group(1).strip()
             episode['participants'] = [p.strip() for p in participants_str.split(',')]
+
+        # Parse recurring
+        recurring_match = re.search(r'Recurring:\s*(.+?)(?=\n|$)', match, re.IGNORECASE)
+        if recurring_match:
+            recurring_text = recurring_match.group(1).strip()
+            if recurring_text.upper().startswith('YES'):
+                episode['is_recurring'] = True
+                # Extract reference description
+                ref_match = re.search(r'references?\s+["\']?(.+?)["\']?\s*$', recurring_text, re.IGNORECASE)
+                if ref_match:
+                    episode['recurring_reference'] = ref_match.group(1).strip()
+                else:
+                    episode['recurring_reference'] = recurring_text[4:].strip()  # Remove "YES -" or "YES"
+            else:
+                episode['is_recurring'] = False
+                episode['recurring_reference'] = None
+        else:
+            episode['is_recurring'] = False
+            episode['recurring_reference'] = None
 
         # Validate episode has required fields and is within window bounds
         if all(k in episode for k in ['start_turn', 'end_turn', 'description', 'participants']):
@@ -161,16 +189,16 @@ def parse_extraction_response(response_text: str, window_start: int, window_end:
     return episodes
 
 
-def extract_conflicts_from_window(
+def extract_humor_from_window(
     df: pd.DataFrame,
     start_idx: int,
     end_idx: int,
     model: str
 ) -> List[Dict]:
-    """Extract conflict episodes from a window of turns."""
+    """Extract humor episodes from a window of turns."""
     validate_api_key_for_model(model)
 
-    text = format_turns_for_conflict(df, start_idx, end_idx)
+    text = format_turns_for_humor(df, start_idx, end_idx)
     prompt = EXTRACTION_PROMPT.format(
         start_turn=start_idx,
         end_turn=end_idx,
@@ -188,15 +216,15 @@ def extract_conflicts_from_window(
     return parse_extraction_response(response.choices[0].message.content, start_idx, end_idx)
 
 
-def rate_conflict_episode(
+def rate_humor_episode(
     df: pd.DataFrame,
     episode: Dict,
     model: str
 ) -> int:
-    """Rate a single conflict episode intensity (1-5)."""
+    """Rate a single humor episode originality (1-5)."""
     validate_api_key_for_model(model)
 
-    episode_text = format_turns_for_conflict(df, episode['start_turn'], episode['end_turn'])
+    episode_text = format_turns_for_humor(df, episode['start_turn'], episode['end_turn'])
     prompt = RATING_PROMPT.format(
         start_turn=episode['start_turn'],
         end_turn=episode['end_turn'],
@@ -212,11 +240,11 @@ def rate_conflict_episode(
         temperature=0.3
     )
 
-    # Parse intensity from response
+    # Parse originality from response
     response_text = response.choices[0].message.content
-    intensity_match = re.search(r'Intensity:\s*(\d)', response_text, re.IGNORECASE)
-    if intensity_match:
-        return int(intensity_match.group(1))
+    originality_match = re.search(r'Originality:\s*(\d)', response_text, re.IGNORECASE)
+    if originality_match:
+        return int(originality_match.group(1))
     return 3  # Default to middle if parsing fails
 
 
@@ -254,9 +282,59 @@ def deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
     return result
 
 
-def create_conflict_chunks(
+def link_inside_jokes(episodes: List[HumorEpisode]) -> Tuple[List[HumorEpisode], List[Dict]]:
+    """
+    Link recurring jokes by assigning consistent joke_ids.
+
+    Returns:
+        - Updated episodes with joke_ids assigned
+        - List of inside joke summaries
+    """
+    # Find all recurring episodes
+    recurring_eps = [ep for ep in episodes if ep.is_recurring and ep.recurring_reference]
+
+    if not recurring_eps:
+        return episodes, []
+
+    # Group by similar recurring_reference (simple string matching for now)
+    joke_groups = {}  # reference -> list of episodes
+
+    for ep in recurring_eps:
+        ref = ep.recurring_reference.lower().strip()
+        # Find if this matches an existing group
+        matched = False
+        for existing_ref in joke_groups:
+            # Simple substring matching - could be improved with embedding similarity
+            if ref in existing_ref or existing_ref in ref:
+                joke_groups[existing_ref].append(ep)
+                matched = True
+                break
+        if not matched:
+            joke_groups[ref] = [ep]
+
+    # Assign joke_ids and build summaries
+    inside_jokes = []
+    joke_counter = 1
+
+    for ref, eps in joke_groups.items():
+        joke_id = f"inside_joke_{joke_counter}"
+        for ep in eps:
+            ep.joke_id = joke_id
+
+        inside_jokes.append({
+            'joke_id': joke_id,
+            'description': ref,
+            'occurrence_count': len(eps),
+            'turn_indices': [(ep.start_turn, ep.end_turn) for ep in eps]
+        })
+        joke_counter += 1
+
+    return episodes, inside_jokes
+
+
+def create_humor_chunks(
     total_turns: int,
-    episodes: List[ConflictEpisode],
+    episodes: List[HumorEpisode],
     chunk_size: int
 ) -> List[Dict]:
     """
@@ -295,14 +373,14 @@ def create_conflict_chunks(
 def aggregate_chunk_metrics(
     chunk_start: int,
     chunk_end: int,
-    episodes: List[ConflictEpisode]
+    episodes: List[HumorEpisode]
 ) -> Dict:
     """Calculate metrics for a single chunk."""
     chunk_turns = chunk_end - chunk_start
 
     # Find episodes that overlap with this chunk
     overlapping = []
-    total_conflict_turns = 0
+    total_humor_turns = 0
 
     for ep in episodes:
         # Check overlap
@@ -311,35 +389,36 @@ def aggregate_chunk_metrics(
             # Count turns within this chunk
             overlap_start = max(ep.start_turn, chunk_start)
             overlap_end = min(ep.end_turn + 1, chunk_end)
-            total_conflict_turns += overlap_end - overlap_start
+            total_humor_turns += overlap_end - overlap_start
 
-    conflict_count = len(overlapping)
-    conflict_proportion = total_conflict_turns / chunk_turns if chunk_turns > 0 else 0
-    mean_intensity = np.mean([ep.intensity for ep in overlapping]) if overlapping else 0
+    humor_count = len(overlapping)
+    humor_proportion = total_humor_turns / chunk_turns if chunk_turns > 0 else 0
+    mean_originality = np.mean([ep.originality for ep in overlapping]) if overlapping else 0
 
     return {
-        'conflict_count': conflict_count,
-        'conflict_turns': total_conflict_turns,
-        'conflict_proportion': conflict_proportion,
-        'mean_intensity': mean_intensity
+        'humor_count': humor_count,
+        'humor_turns': total_humor_turns,
+        'humor_proportion': humor_proportion,
+        'mean_originality': mean_originality
     }
 
 
-def _analyze_single_campaign_conflict(
+def _analyze_single_campaign_humor(
     df: pd.DataFrame,
     campaign_id: str,
     chunk_size: int = None,
     model: str = None
 ) -> MetricResult:
     """
-    Full conflict analysis pipeline for a single campaign.
+    Full humor analysis pipeline for a single campaign.
 
-    1. Extract conflicts using sliding windows (if needed)
+    1. Extract humor using sliding windows (if needed)
     2. Deduplicate overlapping episode detections
     3. Rate each episode
-    4. Create chunks with adjusted boundaries
-    5. Aggregate per-chunk metrics
-    6. Build MetricResult
+    4. Link inside jokes
+    5. Create chunks with adjusted boundaries
+    6. Aggregate per-chunk metrics
+    7. Build MetricResult
     """
     if chunk_size is None:
         chunk_size = config.SOCIAL_CHUNK_SIZE
@@ -350,7 +429,7 @@ def _analyze_single_campaign_conflict(
     window_size = config.SOCIAL_EXTRACTION_WINDOW
     overlap = config.SOCIAL_EXTRACTION_OVERLAP
 
-    # Step 1: Extract conflicts using sliding windows
+    # Step 1: Extract humor using sliding windows
     all_raw_episodes = []
 
     if total_turns <= window_size:
@@ -369,7 +448,7 @@ def _analyze_single_campaign_conflict(
 
     print(f"  Extracting from {len(windows)} window(s)...")
     for start_idx, end_idx in tqdm(windows, desc=f"  {campaign_id} extraction", unit="window"):
-        window_episodes = extract_conflicts_from_window(df, start_idx, end_idx, model)
+        window_episodes = extract_humor_from_window(df, start_idx, end_idx, model)
         all_raw_episodes.extend(window_episodes)
 
     # Step 2: Deduplicate
@@ -380,50 +459,60 @@ def _analyze_single_campaign_conflict(
     if deduped_episodes:
         print(f"  Rating {len(deduped_episodes)} episode(s)...")
         for ep_dict in tqdm(deduped_episodes, desc=f"  {campaign_id} rating", unit="episode"):
-            intensity = rate_conflict_episode(df, ep_dict, model)
-            episode_text = format_turns_for_conflict(df, ep_dict['start_turn'], ep_dict['end_turn'])
+            originality = rate_humor_episode(df, ep_dict, model)
+            episode_text = format_turns_for_humor(df, ep_dict['start_turn'], ep_dict['end_turn'])
 
-            episodes.append(ConflictEpisode(
+            episodes.append(HumorEpisode(
                 start_turn=ep_dict['start_turn'],
                 end_turn=ep_dict['end_turn'],
                 description=ep_dict['description'],
                 participants=ep_dict['participants'],
-                intensity=intensity,
+                originality=originality,
                 turn_count=ep_dict['end_turn'] - ep_dict['start_turn'] + 1,
-                episode_text=episode_text
+                episode_text=episode_text,
+                joke_id=None,
+                is_recurring=ep_dict.get('is_recurring', False),
+                recurring_reference=ep_dict.get('recurring_reference')
             ))
 
-    # Step 4: Create chunks with adjusted boundaries
-    chunks = create_conflict_chunks(total_turns, episodes, chunk_size)
+    # Step 4: Link inside jokes
+    episodes, inside_jokes = link_inside_jokes(episodes)
 
-    # Step 5: Aggregate per-chunk metrics
+    # Step 5: Create chunks with adjusted boundaries
+    chunks = create_humor_chunks(total_turns, episodes, chunk_size)
+
+    # Step 6: Aggregate per-chunk metrics
     chunk_metrics = [aggregate_chunk_metrics(c['start'], c['end'], episodes) for c in chunks]
 
     # Build series arrays
     series = {
-        'conflict_count': np.array([m['conflict_count'] for m in chunk_metrics]),
-        'conflict_turns': np.array([m['conflict_turns'] for m in chunk_metrics]),
-        'conflict_proportion': np.array([m['conflict_proportion'] for m in chunk_metrics]),
-        'mean_intensity': np.array([m['mean_intensity'] for m in chunk_metrics]),
+        'humor_count': np.array([m['humor_count'] for m in chunk_metrics]),
+        'humor_turns': np.array([m['humor_turns'] for m in chunk_metrics]),
+        'humor_proportion': np.array([m['humor_proportion'] for m in chunk_metrics]),
+        'mean_originality': np.array([m['mean_originality'] for m in chunk_metrics]),
     }
 
     # Build summary
-    all_intensities = [ep.intensity for ep in episodes]
+    all_originalities = [ep.originality for ep in episodes]
+    inside_joke_occurrences = sum(ij['occurrence_count'] for ij in inside_jokes)
+
     summary = {
-        'total_conflicts': len(episodes),
-        'mean_conflict_proportion': float(np.mean(series['conflict_proportion'])) if len(series['conflict_proportion']) > 0 else 0.0,
-        'mean_intensity': float(np.mean(all_intensities)) if all_intensities else 0.0,
+        'total_humor_episodes': len(episodes),
+        'mean_humor_proportion': float(np.mean(series['humor_proportion'])) if len(series['humor_proportion']) > 0 else 0.0,
+        'mean_originality': float(np.mean(all_originalities)) if all_originalities else 0.0,
+        'inside_joke_count': len(inside_jokes),
+        'inside_joke_occurrences': inside_joke_occurrences,
     }
 
     # Build metadata with episode data for human review
     episodes_data = [asdict(ep) for ep in episodes]
 
-    print(f"  Found {len(episodes)} conflict(s) in {len(chunks)} chunk(s)")
+    print(f"  Found {len(episodes)} humor episode(s) in {len(chunks)} chunk(s), {len(inside_jokes)} inside joke(s)")
 
     return MetricResult(
         series=series,
         summary=summary,
-        by_player={},  # Optional: could add per-player involvement later
+        by_player={},
         metadata={
             'campaign_id': campaign_id,
             'model': model,
@@ -431,11 +520,12 @@ def _analyze_single_campaign_conflict(
             'total_chunks': len(chunks),
             'total_turns': total_turns,
             'episodes': episodes_data,
+            'inside_jokes': inside_jokes,
         }
     )
 
 
-def analyze_conflict(
+def analyze_humor(
     data: Dict[str, pd.DataFrame],
     chunk_size: int = None,
     model: str = None,
@@ -444,12 +534,13 @@ def analyze_conflict(
     force_refresh: bool = False
 ) -> Dict[str, MetricResult]:
     """
-    Analyze interpersonal conflicts in campaign transcripts.
+    Analyze humor and jokes in campaign transcripts.
 
     Uses a 2-step LLM approach:
-    1. Extract conflict episodes from text
-    2. Rate each episode for intensity (1-5)
+    1. Extract humor episodes from text
+    2. Rate each episode for originality (1-5)
 
+    Also identifies recurring/inside jokes.
     Results are aggregated by fixed-size chunks.
 
     Args:
@@ -457,7 +548,7 @@ def analyze_conflict(
         chunk_size: Turns per chunk (default: config.SOCIAL_CHUNK_SIZE)
         model: LLM model (default: config.SOCIAL_MODEL)
         show_progress: Whether to show progress bars
-        cache_dir: Directory for caching (default: data/processed/conflict_results)
+        cache_dir: Directory for caching (default: data/processed/humor_results)
         force_refresh: Force recomputation ignoring cache
 
     Returns:
@@ -468,11 +559,11 @@ def analyze_conflict(
 
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'conflict_results')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'humor_results')
 
     # Handle caching
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-        data, cache_dir, force_refresh, show_progress, "Conflict"
+        data, cache_dir, force_refresh, show_progress, "Humor"
     )
 
     # Process missing campaigns
@@ -480,17 +571,17 @@ def analyze_conflict(
     if data_to_process:
         total_campaigns = len(data_to_process)
         if show_progress:
-            print(f"Analyzing conflict in {total_campaigns} campaign(s)...")
+            print(f"Analyzing humor in {total_campaigns} campaign(s)...")
 
         for i, (campaign_id, df) in enumerate(data_to_process.items(), 1):
             if show_progress:
                 print(f"Campaign {i}/{total_campaigns}: {campaign_id} ({len(df)} turns)")
-            new_results[campaign_id] = _analyze_single_campaign_conflict(
+            new_results[campaign_id] = _analyze_single_campaign_humor(
                 df, campaign_id,
                 chunk_size=chunk_size,
                 model=model
             )
 
     return _cache.save_new_results_and_combine(
-        cached_results, new_results, cache_dir, show_progress, "Conflict"
+        cached_results, new_results, cache_dir, show_progress, "Humor"
     )

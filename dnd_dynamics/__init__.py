@@ -26,10 +26,10 @@ class _Config:
     MESSAGES_PER_JUDGE_SESSION = 20
     JUDGE_TEMPERATURE = 1.0
 
-    # Conflict analysis settings
-    CONFLICT_MODEL = "gemini/gemini-2.0-flash"
-    CONFLICT_CHUNK_SIZE = 50  # Turns per chunk for aggregation
-    CONFLICT_EXTRACTION_WINDOW = 500  # Max turns per extraction call
-    CONFLICT_EXTRACTION_OVERLAP = 100  # Overlap between extraction windows
+    # Social interaction analysis settings (conflict, humor, etc.)
+    SOCIAL_MODEL = "gemini/gemini-2.0-flash"
+    SOCIAL_CHUNK_SIZE = 50  # Turns per chunk for aggregation
+    SOCIAL_EXTRACTION_WINDOW = 500  # Max turns per extraction call
+    SOCIAL_EXTRACTION_OVERLAP = 100  # Overlap between extraction windows
 
 config = _Config()
