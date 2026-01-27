@@ -7,6 +7,7 @@ Available metrics:
 - semantic: SBERT semantic distance, session novelty
 - dsi: BERT-based Divergent Semantic Integration (GPU/MPS accelerated)
 - llm_judge_creativity: LLM-based creativity scoring (Novelty, Value, Adherence, Resonance)
+- conflict: LLM-based interpersonal conflict detection and intensity rating
 """
 
 from .basic import analyze_basic_metrics
@@ -14,6 +15,7 @@ from .jaccard import analyze_jaccard
 from .semantic import analyze_semantic
 from .dsi import analyze_dsi
 from .llm_judge_creativity import analyze_llm_judge_creativity
+from .llm_conflict import analyze_conflict
 from .result import MetricResult
 
 
@@ -24,8 +26,8 @@ def analyze_all(data, metrics=None, **kwargs):
     Args:
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         metrics: List of metric names to run. If None, runs default metrics
-                 (excludes llm_judge_creativity due to API costs).
-                 Available: 'basic', 'jaccard', 'semantic', 'dsi', 'llm_judge_creativity'
+                 (excludes LLM-based metrics due to API costs).
+                 Available: 'basic', 'jaccard', 'semantic', 'dsi', 'llm_judge_creativity', 'conflict'
         **kwargs: Additional arguments passed to each metric function
                   (e.g., force_refresh=True, show_progress=False)
 
@@ -38,9 +40,10 @@ def analyze_all(data, metrics=None, **kwargs):
         'semantic': analyze_semantic,
         'dsi': analyze_dsi,
         'llm_judge_creativity': analyze_llm_judge_creativity,
+        'conflict': analyze_conflict,
     }
 
-    # Default excludes llm_judge_creativity due to API costs
+    # Default excludes LLM-based metrics due to API costs
     default_metrics = ['basic', 'jaccard', 'semantic', 'dsi']
 
     if metrics is None:
