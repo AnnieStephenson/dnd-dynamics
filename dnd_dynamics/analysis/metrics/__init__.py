@@ -6,12 +6,14 @@ Available metrics:
 - jaccard: Lexical cohesion via Jaccard similarity
 - semantic: SBERT semantic distance, session novelty
 - dsi: BERT-based Divergent Semantic Integration (GPU/MPS accelerated)
+- llm_judge_creativity: LLM-based creativity scoring (Novelty, Value, Adherence, Resonance)
 """
 
 from .basic import analyze_basic_metrics
 from .jaccard import analyze_jaccard
 from .semantic import analyze_semantic
 from .dsi import analyze_dsi
+from .llm_judge_creativity import analyze_llm_judge_creativity
 from .result import MetricResult
 
 
@@ -21,8 +23,9 @@ def analyze_all(data, metrics=None, **kwargs):
 
     Args:
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
-        metrics: List of metric names to run. If None, runs all metrics.
-                 Available: 'basic', 'jaccard', 'semantic', 'dsi'
+        metrics: List of metric names to run. If None, runs default metrics
+                 (excludes llm_judge_creativity due to API costs).
+                 Available: 'basic', 'jaccard', 'semantic', 'dsi', 'llm_judge_creativity'
         **kwargs: Additional arguments passed to each metric function
                   (e.g., force_refresh=True, show_progress=False)
 
@@ -34,9 +37,13 @@ def analyze_all(data, metrics=None, **kwargs):
         'jaccard': analyze_jaccard,
         'semantic': analyze_semantic,
         'dsi': analyze_dsi,
+        'llm_judge_creativity': analyze_llm_judge_creativity,
     }
 
+    # Default excludes llm_judge_creativity due to API costs
+    default_metrics = ['basic', 'jaccard', 'semantic', 'dsi']
+
     if metrics is None:
-        metrics = list(available.keys())
+        metrics = default_metrics
 
     return {name: available[name](data, **kwargs) for name in metrics if name in available}

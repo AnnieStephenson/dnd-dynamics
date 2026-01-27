@@ -21,4 +21,9 @@ class _Config:
     # Session grouping
     MESSAGES_PER_SESSION = 5
 
+    # LLM Judge settings
+    JUDGE_MODEL = "gemini/gemini-2.0-flash"
+    MESSAGES_PER_JUDGE_SESSION = 20
+    JUDGE_TEMPERATURE = 1.0
+
 config = _Config()
