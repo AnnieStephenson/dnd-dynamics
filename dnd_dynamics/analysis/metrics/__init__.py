@@ -10,6 +10,7 @@ Available metrics:
 - conflict: LLM-based interpersonal conflict detection and intensity rating
 - humor: LLM-based humor/joke detection and originality rating
 - cooperation: LLM-based cooperation detection and depth rating
+- norms: LLM-based social norm detection (establishing, following, violating, enforcing)
 """
 
 from .basic import analyze_basic_metrics
@@ -20,6 +21,7 @@ from .llm_judge_creativity import analyze_llm_judge_creativity
 from .llm_conflict import analyze_conflict
 from .llm_humor import analyze_humor
 from .llm_cooperation import analyze_cooperation
+from .llm_norms import analyze_norms
 from .result import MetricResult
 
 
@@ -31,7 +33,7 @@ def analyze_all(data, metrics=None, **kwargs):
         data: Single DataFrame or dict of DataFrames {campaign_id: df}
         metrics: List of metric names to run. If None, runs default metrics
                  (excludes LLM-based metrics due to API costs).
-                 Available: 'basic', 'jaccard', 'semantic', 'dsi', 'llm_judge_creativity', 'conflict', 'humor', 'cooperation'
+                 Available: 'basic', 'jaccard', 'semantic', 'dsi', 'llm_judge_creativity', 'conflict', 'humor', 'cooperation', 'norms'
         **kwargs: Additional arguments passed to each metric function
                   (e.g., force_refresh=True, show_progress=False)
 
@@ -47,6 +49,7 @@ def analyze_all(data, metrics=None, **kwargs):
         'conflict': analyze_conflict,
         'humor': analyze_humor,
         'cooperation': analyze_cooperation,
+        'norms': analyze_norms,
     }
 
     # Default excludes LLM-based metrics due to API costs
