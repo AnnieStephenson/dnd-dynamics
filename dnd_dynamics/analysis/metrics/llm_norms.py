@@ -23,7 +23,7 @@ import litellm
 
 from dnd_dynamics import config
 from dnd_dynamics.api_config import validate_api_key_for_model
-from dnd_dynamics.llm_scaffolding.prompt_caching import retry_llm_call
+from dnd_dynamics.api_config import retry_llm_call
 from . import _cache
 from .result import MetricResult
 

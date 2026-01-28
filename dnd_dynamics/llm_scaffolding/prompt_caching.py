@@ -18,51 +18,13 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import litellm
 import anthropic
+import numpy as np
 import os
 import time
-from dnd_dynamics.api_config import validate_api_key_for_model, get_model_provider
+from dnd_dynamics.api_config import validate_api_key_for_model, get_model_provider, retry_llm_call
 from dnd_dynamics import config
 from dnd_dynamics.analysis import data_loading as dl
 from dnd_dynamics.analysis.metrics import basic
-
-
-def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
-    """
-    Retry wrapper for LLM API calls with exponential backoff.
-    
-    Args:
-        func: Function to retry (e.g., litellm.completion)
-        *args, **kwargs: Arguments to pass to the function
-        max_retries: Maximum number of retry attempts
-        initial_delay: Initial delay in seconds between retries
-        
-    Returns:
-        Function result
-    """
-    retry_delay = initial_delay
-    
-    for attempt in range(max_retries):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            # Check if it's a retryable error
-            error_str = str(e).lower()
-            is_retryable = any(keyword in error_str for keyword in [
-                '502', 'bad gateway', 'service unavailable', '503', 
-                'timeout', 'connection error', 'server error', '500',
-                '529', 'overloaded', 'overloaded_error', 'rate limit',
-                'disconnected', 'geminiexception'
-            ])
-            
-            if is_retryable and attempt < max_retries - 1:
-                print(f"⚠️  API error (attempt {attempt + 1}/{max_retries}): {e}")
-                print(f"⏳ Waiting {retry_delay} seconds before retry...")
-                time.sleep(retry_delay)
-                retry_delay *= 1.5  # Exponential backoff
-                continue
-            else:
-                # Not retryable or final attempt - re-raise the error
-                raise e
 
 
 def generate_system_cache(campaign_name: str, scratchpad: bool = False) -> str:
@@ -81,12 +43,10 @@ def generate_system_cache(campaign_name: str, scratchpad: bool = False) -> str:
     df = dl.load_campaigns(source=campaign_name)
     basic_metrics = basic.analyze_basic_metrics({campaign_name: df})
 
-    mean = basic_metrics[campaign_name]['post_lengths_overall']['overall'][
-        'mean_words']
-    median = basic_metrics[campaign_name]['post_lengths_overall']['overall'][
-        'median_words']
-    standard_dev = basic_metrics[campaign_name]['post_lengths_overall'][
-        'overall']['std_words']
+    result = basic_metrics[campaign_name]
+    mean = result.summary['mean_post_length']
+    median = result.summary['median_post_length']
+    standard_dev = np.std(result.series['post_lengths'])
 
     # Build the system prompt
     system_prompt = f"""You are participating in a Dungeons & Dragons play-by-post forum game simulation.

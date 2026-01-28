@@ -6,8 +6,49 @@ environment variables for different LLM providers (Anthropic, OpenAI, Google, et
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Optional
+
+
+def retry_llm_call(func, *args, max_retries=3, initial_delay=10, **kwargs):
+    """
+    Retry wrapper for LLM API calls with exponential backoff.
+
+    Args:
+        func: Function to retry (e.g., litellm.completion)
+        *args, **kwargs: Arguments to pass to the function
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds between retries
+
+    Returns:
+        Function result
+    """
+    retry_delay = initial_delay
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Check if it's a retryable error
+            error_str = str(e).lower()
+            is_retryable = any(keyword in error_str for keyword in [
+                '502', 'bad gateway', 'service unavailable', '503',
+                'timeout', 'connection error', 'server error', '500',
+                '529', 'overloaded', 'overloaded_error', 'rate limit',
+                'disconnected', 'geminiexception'
+            ])
+
+            if is_retryable and attempt < max_retries - 1:
+                print(f"⚠️  API error (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"⏳ Waiting {retry_delay} seconds before retry...")
+                time.sleep(retry_delay)
+                retry_delay *= 1.5  # Exponential backoff
+                continue
+            else:
+                # Not retryable or final attempt - re-raise the error
+                raise e
+
 
 def setup_api_keys(api_key_file: Optional[str] = None):
     """
