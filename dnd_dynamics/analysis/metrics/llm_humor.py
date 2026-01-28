@@ -391,12 +391,12 @@ def aggregate_chunk_metrics(
             overlap_end = min(ep.end_turn + 1, chunk_end)
             total_humor_turns += overlap_end - overlap_start
 
-    humor_count = len(overlapping)
+    humor_episodes = len(overlapping)
     humor_proportion = total_humor_turns / chunk_turns if chunk_turns > 0 else 0
     mean_originality = np.mean([ep.originality for ep in overlapping]) if overlapping else 0
 
     return {
-        'humor_count': humor_count,
+        'humor_episodes': humor_episodes,
         'humor_turns': total_humor_turns,
         'humor_proportion': humor_proportion,
         'mean_originality': mean_originality
@@ -486,7 +486,7 @@ def _analyze_single_campaign_humor(
 
     # Build series arrays
     series = {
-        'humor_count': np.array([m['humor_count'] for m in chunk_metrics]),
+        'humor_episodes': np.array([m['humor_episodes'] for m in chunk_metrics]),
         'humor_turns': np.array([m['humor_turns'] for m in chunk_metrics]),
         'humor_proportion': np.array([m['humor_proportion'] for m in chunk_metrics]),
         'mean_originality': np.array([m['mean_originality'] for m in chunk_metrics]),

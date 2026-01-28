@@ -313,12 +313,12 @@ def aggregate_chunk_metrics(
             overlap_end = min(ep.end_turn + 1, chunk_end)
             total_conflict_turns += overlap_end - overlap_start
 
-    conflict_count = len(overlapping)
+    conflict_episodes = len(overlapping)
     conflict_proportion = total_conflict_turns / chunk_turns if chunk_turns > 0 else 0
     mean_intensity = np.mean([ep.intensity for ep in overlapping]) if overlapping else 0
 
     return {
-        'conflict_count': conflict_count,
+        'conflict_episodes': conflict_episodes,
         'conflict_turns': total_conflict_turns,
         'conflict_proportion': conflict_proportion,
         'mean_intensity': mean_intensity
@@ -401,7 +401,7 @@ def _analyze_single_campaign_conflict(
 
     # Build series arrays
     series = {
-        'conflict_count': np.array([m['conflict_count'] for m in chunk_metrics]),
+        'conflict_episodes': np.array([m['conflict_episodes'] for m in chunk_metrics]),
         'conflict_turns': np.array([m['conflict_turns'] for m in chunk_metrics]),
         'conflict_proportion': np.array([m['conflict_proportion'] for m in chunk_metrics]),
         'mean_intensity': np.array([m['mean_intensity'] for m in chunk_metrics]),

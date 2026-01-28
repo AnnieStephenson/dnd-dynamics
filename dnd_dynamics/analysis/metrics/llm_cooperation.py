@@ -315,12 +315,12 @@ def aggregate_chunk_metrics(
             overlap_end = min(ep.end_turn + 1, chunk_end)
             total_cooperation_turns += overlap_end - overlap_start
 
-    cooperation_count = len(overlapping)
+    cooperation_episodes = len(overlapping)
     cooperation_proportion = total_cooperation_turns / chunk_turns if chunk_turns > 0 else 0
     mean_depth = np.mean([ep.depth for ep in overlapping]) if overlapping else 0
 
     return {
-        'cooperation_count': cooperation_count,
+        'cooperation_episodes': cooperation_episodes,
         'cooperation_turns': total_cooperation_turns,
         'cooperation_proportion': cooperation_proportion,
         'mean_depth': mean_depth
@@ -403,7 +403,7 @@ def _analyze_single_campaign_cooperation(
 
     # Build series arrays
     series = {
-        'cooperation_count': np.array([m['cooperation_count'] for m in chunk_metrics]),
+        'cooperation_episodes': np.array([m['cooperation_episodes'] for m in chunk_metrics]),
         'cooperation_turns': np.array([m['cooperation_turns'] for m in chunk_metrics]),
         'cooperation_proportion': np.array([m['cooperation_proportion'] for m in chunk_metrics]),
         'mean_depth': np.array([m['mean_depth'] for m in chunk_metrics]),
