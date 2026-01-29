@@ -468,13 +468,15 @@ def analyze_cooperation(
     if not isinstance(data, dict):
         raise ValueError(f"Expected Dict[str, pd.DataFrame], got {type(data)}")
 
+    if model is None:
+        model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
         cache_dir = str(repo_root / 'data' / 'processed' / 'cooperation_results')
 
-    # Handle caching
+    # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(
-        data, cache_dir, force_refresh, show_progress, "Cooperation"
+        data, cache_dir, force_refresh, show_progress, "Cooperation", model=model
     )
 
     # Process missing campaigns
@@ -494,5 +496,5 @@ def analyze_cooperation(
             )
 
     return _cache.save_new_results_and_combine(
-        cached_results, new_results, cache_dir, show_progress, "Cooperation"
+        cached_results, new_results, cache_dir, show_progress, "Cooperation", model=model
     )
