@@ -1,12 +1,18 @@
 """
 LLM Norms Analysis for D&D Campaigns
 
-This module uses an LLM to extract social norm episodes from campaign transcripts:
+This module uses a 2-step LLM approach to extract and categorize social norm episodes
+in campaign transcripts:
+1. Per-turn identification: Which turns contain norm-related activity?
+2. Categorize each episode (type, explicit/implicit, norm description)
+
+Episode types:
 - Norm establishment (explicit agreements or implicit patterns)
 - Norm following (adhering to established norms)
 - Norm violation (breaking established norms)
 - Norm enforcement (reacting when someone violates a norm)
 
+Episodes are formed by batching consecutive norm-related turns.
 Tracks recurring norms across the campaign with per-norm statistics.
 Results are aggregated by fixed-size chunks for time-series analysis.
 """
@@ -25,6 +31,7 @@ from dnd_dynamics import config
 from dnd_dynamics.api_config import validate_api_key_for_model
 from dnd_dynamics.api_config import retry_llm_call
 from . import _cache
+from . import _shared
 from .result import MetricResult
 
 
@@ -43,11 +50,15 @@ class NormEpisode:
     norm_id: Optional[str]  # Links episodes about the same norm
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
+    turn_explanations: List[tuple]  # List of (turn_number, explanation) tuples
 
 
-EXTRACTION_PROMPT = '''You are analyzing a tabletop roleplaying game transcript for social norms.
+EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for social norms.
 
-Identify norm-related episodes - moments where group norms are established, followed, violated, or enforced.
+Carefully consider each turn in the transcript. For each turn that contains norm-related activity, provide:
+- The turn number
+- The type of norm activity: [establishing], [following], [violating], or [enforcing]
+- A one-sentence explanation
 
 Look for:
 - **Establishing**: Creating a new norm (explicit agreement or implicit pattern emerging)
@@ -65,8 +76,8 @@ Types of norms:
 - Character interaction rules (respecting backstories, no PvP)
 
 Do NOT include:
-- In-character roleplay/banter, even if characters react negatively to each other. 
-  A norm reflects how PLAYERS expect the game to be played, not how CHARACTERS treat each other in-fiction. 
+- In-character roleplay/banter, even if characters react negatively to each other.
+  A norm reflects how PLAYERS expect the game to be played, not how CHARACTERS treat each other in-fiction.
   If it's just characters being grumpy/teasing/rude to each other and players are having fun, it's not a norm.
 - Game mechanics or rules (these are DM-enforced, not group norms)
 - One-time decisions that don't become patterns
@@ -78,121 +89,101 @@ Do NOT include:
 
 ## Response Format
 
-If no norm-related episodes found, respond with: NO_NORMS_FOUND
+If no norm-related activity found, respond with: NO_NORMS_FOUND
 
-Otherwise, list each episode:
+Otherwise, list each turn containing norm-related activity:
 
-EPISODE 1:
-Start turn: [number]
-End turn: [number]
-Type: [establishing/following/violating/enforcing]
-Explicit: [YES/NO]
-Norm: [Brief description of the norm itself]
-Description: [What happened in this episode]
-Participants: [comma-separated list]
-
-EPISODE 2:
+TURN 45 [establishing]: Player proposes that the party always votes on major decisions
+TURN 46 [following]: Party members agree to the voting proposal
+TURN 52 [violating]: Player makes a unilateral decision without consulting the party
+TURN 53 [enforcing]: Another player calls out the violation of the voting norm
 ...
 '''
 
 
-def format_turns_for_norms(df: pd.DataFrame, start_idx: int, end_idx: int) -> str:
+CATEGORIZATION_PROMPT = '''Categorize this social norm episode from a Dungeons & Dragons campaign played on an online forum.
+
+## Episode (turns {start_turn} to {end_turn})
+
+{episode_text}
+
+## Turn-by-turn analysis:
+{turn_explanations}
+
+## Categorization
+
+Based on the episode, provide:
+
+1. **Episode Type** (the PRIMARY activity in this episode):
+   - establishing: A new norm is being created or proposed
+   - following: An existing norm is being adhered to
+   - violating: An established norm is being broken
+   - enforcing: Someone is calling out a norm violation
+
+2. **Explicit**: Is this an EXPLICIT norm (stated rule/agreement) or IMPLICIT (pattern/expectation)?
+   - YES: The norm is explicitly stated ("we agreed to...", "let's always...")
+   - NO: The norm is implicit (unspoken expectation, emerging pattern)
+
+3. **Norm Description**: A brief description of the norm itself (not the episode)
+   - e.g., "Party votes on major decisions", "Rogue scouts ahead", "Share loot equally"
+
+4. **Episode Description**: What happened in this specific episode
+
+## Response Format
+Type: [establishing/following/violating/enforcing]
+Explicit: [YES/NO]
+Norm: [Brief description of the norm]
+Description: [What happened in this episode]
+'''
+
+
+def parse_norm_turn_extraction(
+    response_text: str,
+    window_start: int,
+    window_end: int
+) -> List[Dict]:
     """
-    Format DataFrame rows as readable text with character names.
+    Parse LLM response for per-turn norm identification.
 
-    Output format:
-    Turn 45 - CharacterName: message text here...
-    Turn 46 - OtherCharacter: their message text...
-    """
-    lines = []
-    for idx in range(start_idx, min(end_idx + 1, len(df))):
-        row = df.iloc[idx]
-        character = row.get('character', 'Unknown')
-        text = row.get('text', '')
-        lines.append(f"Turn {idx} - {character}: {text}")
-    return '\n'.join(lines)
+    Expects format:
+    TURN 45 [establishing]: explanation
+    TURN 46 [following]: explanation
 
-
-def parse_extraction_response(response_text: str, window_start: int, window_end: int) -> List[Dict]:
-    """
-    Parse LLM extraction response to get episode dictionaries.
-
-    Returns list of dicts with: start_turn, end_turn, episode_type, is_explicit,
-    description (norm), episode_description, participants
+    Returns list of dicts with:
+    - turn_number
+    - explanation
+    - type_hint (establishing/following/violating/enforcing)
     """
     if 'NO_NORMS_FOUND' in response_text.upper():
         return []
 
-    episodes = []
-    episode_pattern = r'EPISODE\s+\d+:\s*\n(.*?)(?=EPISODE\s+\d+:|$)'
-    matches = re.findall(episode_pattern, response_text, re.DOTALL | re.IGNORECASE)
+    # Pattern: "TURN N [type]: explanation"
+    turn_pattern = r'TURN\s+(\d+)\s*\[(establishing|following|violating|enforcing)\]:\s*(.+?)(?=TURN\s+\d+\s*\[|$)'
+    matches = re.findall(turn_pattern, response_text, re.DOTALL | re.IGNORECASE)
 
-    for match in matches:
-        episode = {}
+    turns = []
+    for turn_num_str, type_hint, explanation in matches:
+        turn_num = int(turn_num_str)
+        if window_start <= turn_num <= window_end:
+            turns.append({
+                'turn_number': turn_num,
+                'explanation': explanation.strip(),
+                'type_hint': type_hint.lower()
+            })
 
-        # Parse start turn
-        start_match = re.search(r'Start turn:\s*(\d+)', match, re.IGNORECASE)
-        if start_match:
-            episode['start_turn'] = int(start_match.group(1))
-
-        # Parse end turn
-        end_match = re.search(r'End turn:\s*(\d+)', match, re.IGNORECASE)
-        if end_match:
-            episode['end_turn'] = int(end_match.group(1))
-
-        # Parse type
-        type_match = re.search(r'Type:\s*(establishing|following|violating|enforcing)', match, re.IGNORECASE)
-        if type_match:
-            episode['episode_type'] = type_match.group(1).lower()
-
-        # Parse explicit
-        explicit_match = re.search(r'Explicit:\s*(YES|NO)', match, re.IGNORECASE)
-        if explicit_match:
-            episode['is_explicit'] = explicit_match.group(1).upper() == 'YES'
-        else:
-            episode['is_explicit'] = False
-
-        # Parse norm description
-        norm_match = re.search(r'Norm:\s*(.+?)(?=\n|Description:|$)', match, re.IGNORECASE | re.DOTALL)
-        if norm_match:
-            episode['description'] = norm_match.group(1).strip()
-
-        # Parse episode description
-        desc_match = re.search(r'Description:\s*(.+?)(?=\n|Participants:|$)', match, re.IGNORECASE | re.DOTALL)
-        if desc_match:
-            episode['episode_description'] = desc_match.group(1).strip()
-
-        # Parse participants
-        part_match = re.search(r'Participants:\s*(.+?)(?=\n|$)', match, re.IGNORECASE)
-        if part_match:
-            participants_str = part_match.group(1).strip()
-            episode['participants'] = [p.strip() for p in participants_str.split(',')]
-
-        # Validate episode has required fields and is within window bounds
-        required = ['start_turn', 'end_turn', 'episode_type', 'description', 'participants']
-        if all(k in episode for k in required) and episode['episode_type'] in EPISODE_TYPES:
-            # Clamp to window bounds
-            episode['start_turn'] = max(episode['start_turn'], window_start)
-            episode['end_turn'] = min(episode['end_turn'], window_end)
-            if episode['start_turn'] <= episode['end_turn']:
-                # Set default episode_description if missing
-                if 'episode_description' not in episode:
-                    episode['episode_description'] = episode['description']
-                episodes.append(episode)
-
-    return episodes
+    return turns
 
 
-def extract_norms_from_window(
+def extract_norm_turns_from_window(
     df: pd.DataFrame,
     start_idx: int,
     end_idx: int,
     model: str
 ) -> List[Dict]:
-    """Extract norm episodes from a window of turns."""
+    """Extract norm-related turns from a window using per-turn identification."""
     validate_api_key_for_model(model)
 
-    text = format_turns_for_norms(df, start_idx, end_idx)
+    text = _shared.format_turns(df, start_idx, end_idx)
     prompt = EXTRACTION_PROMPT.format(
         start_turn=start_idx,
         end_turn=end_idx,
@@ -204,44 +195,150 @@ def extract_norms_from_window(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2000,
-        temperature=0.3  # Lower temp for extraction to be consistent
+        temperature=0.3
     )
 
-    return parse_extraction_response(response.choices[0].message.content, start_idx, end_idx)
+    return parse_norm_turn_extraction(
+        response.choices[0].message.content,
+        start_idx,
+        end_idx
+    )
 
 
-def deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
+def categorize_norm_episode(
+    df: pd.DataFrame,
+    episode: Dict,
+    model: str
+) -> Dict:
     """
-    Deduplicate episodes that have >50% turn overlap.
-    Keeps the episode with longer description.
+    Categorize a single norm episode.
+
+    Returns dict with:
+    - episode_type
+    - is_explicit
+    - description (norm)
+    - episode_description
     """
-    if not episodes:
+    validate_api_key_for_model(model)
+
+    episode_text = _shared.format_turns(df, episode['start_turn'], episode['end_turn'])
+
+    # Format turn explanations for the prompt
+    turn_explanations_str = "\n".join(
+        f"Turn {turn_num} [{episode.get('type_hints', {}).get(turn_num, 'unknown')}]: {explanation}"
+        for turn_num, explanation in episode.get('turn_explanations', [])
+    )
+
+    prompt = CATEGORIZATION_PROMPT.format(
+        start_turn=episode['start_turn'],
+        end_turn=episode['end_turn'],
+        episode_text=episode_text,
+        turn_explanations=turn_explanations_str
+    )
+
+    response = retry_llm_call(
+        litellm.completion,
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=400,
+        temperature=0.3
+    )
+
+    response_text = response.choices[0].message.content
+
+    # Parse episode type
+    type_match = re.search(r'Type:\s*(establishing|following|violating|enforcing)', response_text, re.IGNORECASE)
+    episode_type = type_match.group(1).lower() if type_match else _infer_type_from_hints(episode)
+
+    # Parse explicit
+    explicit_match = re.search(r'Explicit:\s*(YES|NO)', response_text, re.IGNORECASE)
+    is_explicit = explicit_match.group(1).upper() == 'YES' if explicit_match else False
+
+    # Parse norm description
+    norm_match = re.search(r'Norm:\s*(.+?)(?=\n|Description:|$)', response_text, re.IGNORECASE | re.DOTALL)
+    norm_description = norm_match.group(1).strip() if norm_match else episode.get('description', '')
+
+    # Parse episode description
+    desc_match = re.search(r'Description:\s*(.+?)(?=\n|$)', response_text, re.IGNORECASE | re.DOTALL)
+    episode_description = desc_match.group(1).strip() if desc_match else episode.get('description', '')
+
+    return {
+        'episode_type': episode_type,
+        'is_explicit': is_explicit,
+        'description': norm_description,
+        'episode_description': episode_description
+    }
+
+
+def _infer_type_from_hints(episode: Dict) -> str:
+    """Infer episode type from type hints if categorization parsing fails."""
+    type_hints = episode.get('type_hints', {})
+    if not type_hints:
+        return 'establishing'  # Default
+
+    # Use most common type hint
+    from collections import Counter
+    counts = Counter(type_hints.values())
+    return counts.most_common(1)[0][0]
+
+
+def batch_norm_turns(turns: List[Dict], max_gap: int = 1) -> List[Dict]:
+    """
+    Batch consecutive norm turns into episodes.
+    Preserves type hints from each turn.
+
+    Returns episodes with:
+    - start_turn, end_turn
+    - turn_count
+    - turn_explanations: List of (turn_number, explanation)
+    - type_hints: Dict mapping turn_number to type_hint
+    - description: First turn's explanation
+    """
+    if not turns:
         return []
 
-    # Sort by start turn
-    sorted_eps = sorted(episodes, key=lambda e: e['start_turn'])
-    result = []
+    sorted_turns = sorted(turns, key=lambda t: t['turn_number'])
+    episodes = []
 
-    for ep in sorted_eps:
-        ep_turns = set(range(ep['start_turn'], ep['end_turn'] + 1))
-        merged = False
+    current_episode = {
+        'start_turn': sorted_turns[0]['turn_number'],
+        'end_turn': sorted_turns[0]['turn_number'],
+        'turn_explanations': [(sorted_turns[0]['turn_number'], sorted_turns[0]['explanation'])],
+        'type_hints': {sorted_turns[0]['turn_number']: sorted_turns[0].get('type_hint', 'unknown')}
+    }
 
-        for i, existing in enumerate(result):
-            existing_turns = set(range(existing['start_turn'], existing['end_turn'] + 1))
-            overlap = len(ep_turns & existing_turns)
-            min_size = min(len(ep_turns), len(existing_turns))
+    for turn in sorted_turns[1:]:
+        if turn['turn_number'] <= current_episode['end_turn'] + max_gap:
+            # Extend current episode
+            current_episode['end_turn'] = turn['turn_number']
+            current_episode['turn_explanations'].append(
+                (turn['turn_number'], turn['explanation'])
+            )
+            current_episode['type_hints'][turn['turn_number']] = turn.get('type_hint', 'unknown')
+        else:
+            # Finalize current episode and start new one
+            _finalize_norm_episode(current_episode)
+            episodes.append(current_episode)
 
-            if overlap > min_size * 0.5:  # >50% overlap
-                # Keep episode with longer description
-                if len(ep.get('description', '')) > len(existing.get('description', '')):
-                    result[i] = ep
-                merged = True
-                break
+            current_episode = {
+                'start_turn': turn['turn_number'],
+                'end_turn': turn['turn_number'],
+                'turn_explanations': [(turn['turn_number'], turn['explanation'])],
+                'type_hints': {turn['turn_number']: turn.get('type_hint', 'unknown')}
+            }
 
-        if not merged:
-            result.append(ep)
+    # Don't forget last episode
+    _finalize_norm_episode(current_episode)
+    episodes.append(current_episode)
 
-    return result
+    return episodes
+
+
+def _finalize_norm_episode(episode: Dict) -> None:
+    """Add computed fields to an episode dict (modifies in place)."""
+    episode['turn_count'] = episode['end_turn'] - episode['start_turn'] + 1
+    episode['description'] = episode['turn_explanations'][0][1]
+    episode['participants'] = []  # To be filled by caller
 
 
 def link_norms(episodes: List[NormEpisode]) -> Tuple[List[NormEpisode], List[Dict]]:
@@ -402,12 +499,14 @@ def _analyze_single_campaign_norms(
     """
     Full norms analysis pipeline for a single campaign.
 
-    1. Extract norms using sliding windows (if needed)
-    2. Deduplicate overlapping episode detections
-    3. Link norms (group episodes about same norm)
-    4. Create chunks with adjusted boundaries
-    5. Aggregate per-chunk metrics
-    6. Build MetricResult
+    1. Extract norm turns using sliding windows
+    2. Deduplicate turns
+    3. Batch consecutive turns into episodes
+    4. Categorize each episode (type, explicit, norm description)
+    5. Link norms (group episodes about same norm)
+    6. Create chunks with adjusted boundaries
+    7. Aggregate per-chunk metrics
+    8. Build MetricResult
     """
     if chunk_size is None:
         chunk_size = config.SOCIAL_CHUNK_SIZE
@@ -418,14 +517,12 @@ def _analyze_single_campaign_norms(
     window_size = config.SOCIAL_EXTRACTION_WINDOW
     overlap = config.SOCIAL_EXTRACTION_OVERLAP
 
-    # Step 1: Extract norms using sliding windows
-    all_raw_episodes = []
+    # Step 1: Extract norm turns using sliding windows
+    all_turns = []
 
     if total_turns <= window_size:
-        # Single window
         windows = [(0, total_turns - 1)]
     else:
-        # Sliding windows with overlap
         windows = []
         start = 0
         while start < total_turns:
@@ -437,37 +534,50 @@ def _analyze_single_campaign_norms(
 
     print(f"  Extracting from {len(windows)} window(s)...")
     for start_idx, end_idx in tqdm(windows, desc=f"  {campaign_id} extraction", unit="window"):
-        window_episodes = extract_norms_from_window(df, start_idx, end_idx, model)
-        all_raw_episodes.extend(window_episodes)
+        window_turns = extract_norm_turns_from_window(df, start_idx, end_idx, model)
+        all_turns.extend(window_turns)
 
-    # Step 2: Deduplicate
-    deduped_episodes = deduplicate_episodes(all_raw_episodes)
+    # Step 2: Deduplicate turns
+    deduped_turns = _shared.deduplicate_turns(all_turns)
 
-    # Step 3: Convert to NormEpisode objects
+    # Step 3: Batch consecutive turns into episodes
+    episode_dicts = batch_norm_turns(deduped_turns, max_gap=1)
+
+    # Add participants to each episode
+    for ep in episode_dicts:
+        ep['participants'] = _shared.extract_participants_from_df(
+            df, ep['start_turn'], ep['end_turn']
+        )
+
+    # Step 4: Categorize each episode
     episodes = []
-    for ep_dict in deduped_episodes:
-        episode_text = format_turns_for_norms(df, ep_dict['start_turn'], ep_dict['end_turn'])
+    if episode_dicts:
+        print(f"  Categorizing {len(episode_dicts)} episode(s)...")
+        for ep_dict in tqdm(episode_dicts, desc=f"  {campaign_id} categorizing", unit="episode"):
+            categorization = categorize_norm_episode(df, ep_dict, model)
+            episode_text = _shared.format_turns(df, ep_dict['start_turn'], ep_dict['end_turn'])
 
-        episodes.append(NormEpisode(
-            start_turn=ep_dict['start_turn'],
-            end_turn=ep_dict['end_turn'],
-            description=ep_dict['description'],
-            episode_description=ep_dict.get('episode_description', ep_dict['description']),
-            participants=ep_dict['participants'],
-            episode_type=ep_dict['episode_type'],
-            is_explicit=ep_dict.get('is_explicit', False),
-            norm_id=None,
-            turn_count=ep_dict['end_turn'] - ep_dict['start_turn'] + 1,
-            episode_text=episode_text
-        ))
+            episodes.append(NormEpisode(
+                start_turn=ep_dict['start_turn'],
+                end_turn=ep_dict['end_turn'],
+                description=categorization['description'],
+                episode_description=categorization['episode_description'],
+                participants=ep_dict['participants'],
+                episode_type=categorization['episode_type'],
+                is_explicit=categorization['is_explicit'],
+                norm_id=None,
+                turn_count=ep_dict['turn_count'],
+                episode_text=episode_text,
+                turn_explanations=ep_dict.get('turn_explanations', [])
+            ))
 
-    # Step 4: Link norms
+    # Step 5: Link norms
     episodes, norms = link_norms(episodes)
 
-    # Step 5: Create chunks with adjusted boundaries
+    # Step 6: Create chunks with adjusted boundaries
     chunks = create_norm_chunks(total_turns, episodes, chunk_size)
 
-    # Step 6: Aggregate per-chunk metrics
+    # Step 7: Aggregate per-chunk metrics
     chunk_metrics = [aggregate_chunk_metrics(c['start'], c['end'], episodes) for c in chunks]
 
     # Build series arrays
@@ -525,6 +635,11 @@ def analyze_norms(
     """
     Analyze social norms in campaign transcripts.
 
+    Uses a 2-step LLM approach:
+    1. Per-turn identification of norm-related activity
+    2. Categorize each episode (type, explicit/implicit, norm description)
+
+    Episodes are formed by batching consecutive norm-related turns.
     Detects norm-related episodes:
     - Establishing: Creating a new norm
     - Following: Adhering to an established norm
@@ -538,7 +653,7 @@ def analyze_norms(
         chunk_size: Turns per chunk (default: config.SOCIAL_CHUNK_SIZE)
         model: LLM model (default: config.SOCIAL_MODEL)
         show_progress: Whether to show progress bars
-        cache_dir: Directory for caching (default: data/processed/norms_results)
+        cache_dir: Directory for caching (default: data/processed/norms_results_v2)
         force_refresh: Force recomputation ignoring cache
 
     Returns:
@@ -551,7 +666,7 @@ def analyze_norms(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'norms_results')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'norms_results_v2')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(

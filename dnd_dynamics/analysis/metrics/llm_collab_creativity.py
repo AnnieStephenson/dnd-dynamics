@@ -2,13 +2,11 @@
 LLM Collaborative Creativity Analysis for D&D Campaigns
 
 This module uses a 2-step LLM approach to extract and rate collaborative creativity
-episodes in campaign transcripts:
-1. Extract episodes where players build on each other's narrative contributions
+in campaign transcripts:
+1. Per-turn identification: Which turns contain collaborative creativity?
 2. Rate each episode for creativity (1-5)
 
-Includes: world-building, character development, shared storytelling, creative problem-solving.
-Excludes: purely tactical/mechanical coordination.
-
+Episodes are formed by batching consecutive collaborative creativity turns.
 Results are aggregated by fixed-size chunks for time-series analysis.
 """
 
@@ -26,6 +24,7 @@ from dnd_dynamics import config
 from dnd_dynamics.api_config import validate_api_key_for_model
 from dnd_dynamics.api_config import retry_llm_call
 from . import _cache
+from . import _shared
 from .result import MetricResult
 
 
@@ -38,15 +37,20 @@ class CollabCreativityEpisode:
     creativity: int  # 1-5 rating
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
+    turn_explanations: List[tuple]  # List of (turn_number, explanation) tuples
 
 
-EXTRACTION_PROMPT = '''You are analyzing a tabletop roleplaying game transcript for moments of collaborative creativity.
+EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for moments of collaborative creativity.
 
-Identify episodes where players build on each other's narrative contributions. Include:
-- **World-building**: Players adding details to the setting, creating lore together
-- **Character development**: Meaningful character interactions that develop relationships or backstories
-- **Shared storytelling**: Players contributing to and building on each other's narrative ideas
-- **Creative problem-solving**: Unconventional or imaginative solutions developed collaboratively
+Carefully consider each turn in the transcript. For each turn that contains collaborative creativity, provide:
+- The turn number
+- A one-sentence explanation of the collaboration
+
+Include:
+- World-building: Players adding details to the setting, creating lore together
+- Character development: Meaningful character interactions that develop relationships or backstories
+- Shared storytelling: Players contributing to and building on each other's narrative ideas
+- Creative problem-solving: Unconventional or imaginative solutions developed collaboratively
 
 This may include collaborative humor, but also non-humorous creative building.
 
@@ -64,27 +68,23 @@ Do NOT include:
 
 If no collaborative creativity found, respond with: NO_COLLAB_CREATIVITY_FOUND
 
-Otherwise, list each episode:
+Otherwise, list each turn containing collaborative creativity:
 
-EPISODE 1:
-Start turn: [number]
-End turn: [number]
-Description: [What creative collaboration occurred]
-Participants: [comma-separated list]
-
-EPISODE 2:
+TURN 45: Player builds on another's description of the tavern atmosphere
+TURN 46: Party collaboratively invents backstory connection between characters
+TURN 52: Creative improvised solution where players build on each other's ideas
 ...
 '''
 
 
-RATING_PROMPT = '''Rate this collaborative creativity episode from a tabletop roleplaying game.
+RATING_PROMPT = '''Rate this collaborative creativity episode from a Dungeons & Dragons campaign played on an online forum.
 
 ## Episode (turns {start_turn} to {end_turn})
 
 {episode_text}
 
-## Description
-{description}
+## Turn-by-turn analysis:
+{turn_explanations}
 
 ## Rating
 
@@ -107,81 +107,16 @@ Reasoning: [1 sentence]
 '''
 
 
-def format_turns_for_collab_creativity(df: pd.DataFrame, start_idx: int, end_idx: int) -> str:
-    """
-    Format DataFrame rows as readable text with character names.
-
-    Output format:
-    Turn 45 - CharacterName: message text here...
-    Turn 46 - OtherCharacter: their message text...
-    """
-    lines = []
-    for idx in range(start_idx, min(end_idx + 1, len(df))):
-        row = df.iloc[idx]
-        character = row.get('character', 'Unknown')
-        text = row.get('text', '')
-        lines.append(f"Turn {idx} - {character}: {text}")
-    return '\n'.join(lines)
-
-
-def parse_extraction_response(response_text: str, window_start: int, window_end: int) -> List[Dict]:
-    """
-    Parse LLM extraction response to get episode dictionaries.
-
-    Returns list of dicts with: start_turn, end_turn, description, participants
-    """
-    if 'NO_COLLAB_CREATIVITY_FOUND' in response_text.upper():
-        return []
-
-    episodes = []
-    episode_pattern = r'EPISODE\s+\d+:\s*\n(.*?)(?=EPISODE\s+\d+:|$)'
-    matches = re.findall(episode_pattern, response_text, re.DOTALL | re.IGNORECASE)
-
-    for match in matches:
-        episode = {}
-
-        # Parse start turn
-        start_match = re.search(r'Start turn:\s*(\d+)', match, re.IGNORECASE)
-        if start_match:
-            episode['start_turn'] = int(start_match.group(1))
-
-        # Parse end turn
-        end_match = re.search(r'End turn:\s*(\d+)', match, re.IGNORECASE)
-        if end_match:
-            episode['end_turn'] = int(end_match.group(1))
-
-        # Parse description
-        desc_match = re.search(r'Description:\s*(.+?)(?=\n|Participants:|$)', match, re.IGNORECASE | re.DOTALL)
-        if desc_match:
-            episode['description'] = desc_match.group(1).strip()
-
-        # Parse participants
-        part_match = re.search(r'Participants:\s*(.+?)(?=\n|$)', match, re.IGNORECASE)
-        if part_match:
-            participants_str = part_match.group(1).strip()
-            episode['participants'] = [p.strip() for p in participants_str.split(',')]
-
-        # Validate episode has required fields and is within window bounds
-        if all(k in episode for k in ['start_turn', 'end_turn', 'description', 'participants']):
-            # Clamp to window bounds
-            episode['start_turn'] = max(episode['start_turn'], window_start)
-            episode['end_turn'] = min(episode['end_turn'], window_end)
-            if episode['start_turn'] <= episode['end_turn']:
-                episodes.append(episode)
-
-    return episodes
-
-
-def extract_collab_creativity_from_window(
+def extract_collab_creativity_turns_from_window(
     df: pd.DataFrame,
     start_idx: int,
     end_idx: int,
     model: str
 ) -> List[Dict]:
-    """Extract collaborative creativity episodes from a window of turns."""
+    """Extract collaborative creativity turns from a window using per-turn identification."""
     validate_api_key_for_model(model)
 
-    text = format_turns_for_collab_creativity(df, start_idx, end_idx)
+    text = _shared.format_turns(df, start_idx, end_idx)
     prompt = EXTRACTION_PROMPT.format(
         start_turn=start_idx,
         end_turn=end_idx,
@@ -193,10 +128,15 @@ def extract_collab_creativity_from_window(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2000,
-        temperature=0.3  # Lower temp for extraction to be consistent
+        temperature=0.3
     )
 
-    return parse_extraction_response(response.choices[0].message.content, start_idx, end_idx)
+    return _shared.parse_turn_extraction_response(
+        response.choices[0].message.content,
+        start_idx,
+        end_idx,
+        "NO_COLLAB_CREATIVITY_FOUND"
+    )
 
 
 def rate_collab_creativity_episode(
@@ -207,12 +147,19 @@ def rate_collab_creativity_episode(
     """Rate a single collaborative creativity episode (1-5)."""
     validate_api_key_for_model(model)
 
-    episode_text = format_turns_for_collab_creativity(df, episode['start_turn'], episode['end_turn'])
+    episode_text = _shared.format_turns(df, episode['start_turn'], episode['end_turn'])
+
+    # Format turn explanations for the prompt
+    turn_explanations_str = "\n".join(
+        f"Turn {turn_num}: {explanation}"
+        for turn_num, explanation in episode.get('turn_explanations', [])
+    )
+
     prompt = RATING_PROMPT.format(
         start_turn=episode['start_turn'],
         end_turn=episode['end_turn'],
         episode_text=episode_text,
-        description=episode['description']
+        turn_explanations=turn_explanations_str or episode.get('description', '')
     )
 
     response = retry_llm_call(
@@ -229,40 +176,6 @@ def rate_collab_creativity_episode(
     if creativity_match:
         return int(creativity_match.group(1))
     return 3  # Default to middle if parsing fails
-
-
-def deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
-    """
-    Deduplicate episodes that have >50% turn overlap.
-    Keeps the episode with longer description.
-    """
-    if not episodes:
-        return []
-
-    # Sort by start turn
-    sorted_eps = sorted(episodes, key=lambda e: e['start_turn'])
-    result = []
-
-    for ep in sorted_eps:
-        ep_turns = set(range(ep['start_turn'], ep['end_turn'] + 1))
-        merged = False
-
-        for i, existing in enumerate(result):
-            existing_turns = set(range(existing['start_turn'], existing['end_turn'] + 1))
-            overlap = len(ep_turns & existing_turns)
-            min_size = min(len(ep_turns), len(existing_turns))
-
-            if overlap > min_size * 0.5:  # >50% overlap
-                # Keep episode with longer description
-                if len(ep.get('description', '')) > len(existing.get('description', '')):
-                    result[i] = ep
-                merged = True
-                break
-
-        if not merged:
-            result.append(ep)
-
-    return result
 
 
 def create_collab_creativity_chunks(
@@ -345,12 +258,13 @@ def _analyze_single_campaign_collab_creativity(
     """
     Full collaborative creativity analysis pipeline for a single campaign.
 
-    1. Extract episodes using sliding windows (if needed)
-    2. Deduplicate overlapping episode detections
-    3. Rate each episode
-    4. Create chunks with adjusted boundaries
-    5. Aggregate per-chunk metrics
-    6. Build MetricResult
+    1. Extract collaborative creativity turns using sliding windows
+    2. Deduplicate turns
+    3. Batch consecutive turns into episodes
+    4. Rate each episode
+    5. Create chunks with adjusted boundaries
+    6. Aggregate per-chunk metrics
+    7. Build MetricResult
     """
     if chunk_size is None:
         chunk_size = config.SOCIAL_CHUNK_SIZE
@@ -361,14 +275,12 @@ def _analyze_single_campaign_collab_creativity(
     window_size = config.SOCIAL_EXTRACTION_WINDOW
     overlap = config.SOCIAL_EXTRACTION_OVERLAP
 
-    # Step 1: Extract using sliding windows
-    all_raw_episodes = []
+    # Step 1: Extract collaborative creativity turns using sliding windows
+    all_turns = []
 
     if total_turns <= window_size:
-        # Single window
         windows = [(0, total_turns - 1)]
     else:
-        # Sliding windows with overlap
         windows = []
         start = 0
         while start < total_turns:
@@ -380,19 +292,28 @@ def _analyze_single_campaign_collab_creativity(
 
     print(f"  Extracting from {len(windows)} window(s)...")
     for start_idx, end_idx in tqdm(windows, desc=f"  {campaign_id} extraction", unit="window"):
-        window_episodes = extract_collab_creativity_from_window(df, start_idx, end_idx, model)
-        all_raw_episodes.extend(window_episodes)
+        window_turns = extract_collab_creativity_turns_from_window(df, start_idx, end_idx, model)
+        all_turns.extend(window_turns)
 
-    # Step 2: Deduplicate
-    deduped_episodes = deduplicate_episodes(all_raw_episodes)
+    # Step 2: Deduplicate turns
+    deduped_turns = _shared.deduplicate_turns(all_turns)
 
-    # Step 3: Rate each episode
+    # Step 3: Batch consecutive turns into episodes
+    episode_dicts = _shared.batch_consecutive_turns(deduped_turns, max_gap=1)
+
+    # Add participants to each episode
+    for ep in episode_dicts:
+        ep['participants'] = _shared.extract_participants_from_df(
+            df, ep['start_turn'], ep['end_turn']
+        )
+
+    # Step 4: Rate each episode
     episodes = []
-    if deduped_episodes:
-        print(f"  Rating {len(deduped_episodes)} episode(s)...")
-        for ep_dict in tqdm(deduped_episodes, desc=f"  {campaign_id} rating", unit="episode"):
+    if episode_dicts:
+        print(f"  Rating {len(episode_dicts)} episode(s)...")
+        for ep_dict in tqdm(episode_dicts, desc=f"  {campaign_id} rating", unit="episode"):
             creativity = rate_collab_creativity_episode(df, ep_dict, model)
-            episode_text = format_turns_for_collab_creativity(df, ep_dict['start_turn'], ep_dict['end_turn'])
+            episode_text = _shared.format_turns(df, ep_dict['start_turn'], ep_dict['end_turn'])
 
             episodes.append(CollabCreativityEpisode(
                 start_turn=ep_dict['start_turn'],
@@ -400,14 +321,15 @@ def _analyze_single_campaign_collab_creativity(
                 description=ep_dict['description'],
                 participants=ep_dict['participants'],
                 creativity=creativity,
-                turn_count=ep_dict['end_turn'] - ep_dict['start_turn'] + 1,
-                episode_text=episode_text
+                turn_count=ep_dict['turn_count'],
+                episode_text=episode_text,
+                turn_explanations=ep_dict.get('turn_explanations', [])
             ))
 
-    # Step 4: Create chunks with adjusted boundaries
+    # Step 5: Create chunks with adjusted boundaries
     chunks = create_collab_creativity_chunks(total_turns, episodes, chunk_size)
 
-    # Step 5: Aggregate per-chunk metrics
+    # Step 6: Aggregate per-chunk metrics
     chunk_metrics = [aggregate_chunk_metrics(c['start'], c['end'], episodes) for c in chunks]
 
     # Build series arrays
@@ -458,9 +380,10 @@ def analyze_collab_creativity(
     Analyze collaborative creativity in campaign transcripts.
 
     Uses a 2-step LLM approach:
-    1. Extract collaborative creativity episodes from text
+    1. Per-turn identification of collaborative creativity
     2. Rate each episode for creativity (1-5)
 
+    Episodes are formed by batching consecutive collaborative creativity turns.
     Results are aggregated by fixed-size chunks.
 
     Args:
@@ -468,7 +391,7 @@ def analyze_collab_creativity(
         chunk_size: Turns per chunk (default: config.SOCIAL_CHUNK_SIZE)
         model: LLM model (default: config.SOCIAL_MODEL)
         show_progress: Whether to show progress bars
-        cache_dir: Directory for caching (default: data/processed/collab_creativity_results)
+        cache_dir: Directory for caching (default: data/processed/collab_creativity_results_v2)
         force_refresh: Force recomputation ignoring cache
 
     Returns:
@@ -481,7 +404,7 @@ def analyze_collab_creativity(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'collab_creativity_results')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'collab_creativity_results_v2')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(
