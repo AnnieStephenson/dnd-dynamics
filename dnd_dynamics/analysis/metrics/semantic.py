@@ -315,6 +315,114 @@ def session_cohesion(df: pd.DataFrame,
     return pd.DataFrame(session_stats)
 
 
+def _calculate_player_sequential_cohesion(df: pd.DataFrame,
+                                          embeddings: np.ndarray,
+                                          player: str,
+                                          window: int = 1) -> np.ndarray:
+    """
+    Calculate sequential cohesion for a single player's posts.
+
+    Compares each of the player's posts to their previous post (ignoring
+    posts from other players in between).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Full campaign DataFrame (used to get player mask)
+    embeddings : np.ndarray
+        Precomputed embeddings for all posts in df
+    player : str
+        Player name to analyze
+    window : int, default 1
+        Number of steps back to compare
+
+    Returns
+    -------
+    np.ndarray
+        Array of cosine similarities between consecutive player posts
+    """
+    player_mask = df['player'] == player
+    player_indices = df.index[player_mask].tolist()
+
+    if len(player_indices) < 2:
+        return np.array([])
+
+    # Get embeddings for this player's posts in order
+    # Convert DataFrame index to positional index for embeddings array
+    positional_indices = [df.index.get_loc(idx) for idx in player_indices]
+    player_embeddings = embeddings[positional_indices]
+
+    # Calculate similarity between consecutive posts
+    scores = []
+    for i in range(window, len(player_embeddings)):
+        current_emb = player_embeddings[i].reshape(1, -1)
+        previous_emb = player_embeddings[i - window].reshape(1, -1)
+        sim = cosine_similarity(current_emb, previous_emb)[0, 0]
+        scores.append(sim)
+
+    return np.array(scores)
+
+
+def _calculate_player_session_cohesion(df: pd.DataFrame,
+                                       embeddings: np.ndarray,
+                                       player: str,
+                                       chunk_size: int = None) -> np.ndarray:
+    """
+    Calculate session-like cohesion for a single player's posts.
+
+    Groups the player's messages into fixed-size chunks (pseudo-sessions)
+    and calculates within-chunk pairwise similarity.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Full campaign DataFrame (used to get player mask)
+    embeddings : np.ndarray
+        Precomputed embeddings for all posts in df
+    player : str
+        Player name to analyze
+    chunk_size : int, optional
+        Number of messages per chunk. Defaults to config.MESSAGES_PER_SESSION
+
+    Returns
+    -------
+    np.ndarray
+        Array of mean pairwise similarities per chunk
+    """
+    if chunk_size is None:
+        chunk_size = config.MESSAGES_PER_SESSION
+
+    player_mask = df['player'] == player
+    player_indices = df.index[player_mask].tolist()
+
+    if len(player_indices) < 2:
+        return np.array([])
+
+    # Get embeddings for this player's posts in order
+    positional_indices = [df.index.get_loc(idx) for idx in player_indices]
+    player_embeddings = embeddings[positional_indices]
+
+    # Group into chunks and calculate within-chunk similarity
+    chunk_similarities = []
+    for start in range(0, len(player_embeddings), chunk_size):
+        chunk_emb = player_embeddings[start:start + chunk_size]
+
+        if len(chunk_emb) < 2:
+            continue
+
+        # Calculate all pairwise similarities within chunk
+        similarities = cosine_similarity(chunk_emb)
+
+        # Get upper triangle (excluding diagonal)
+        mask = np.triu(np.ones_like(similarities, dtype=bool), k=1)
+        pairwise_sims = similarities[mask]
+
+        if len(pairwise_sims) > 0:
+            chunk_similarities.append(np.mean(pairwise_sims))
+
+    return np.array(chunk_similarities)
+
+
 def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool) -> Optional[MetricResult]:
     """
     Run semantic cohesion analysis for a single campaign.
@@ -342,6 +450,24 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
     # Analyze session cohesion (within-session similarity)
     sess_cohesion = session_cohesion(df, embeddings=embeddings)
 
+    # Per-player metrics
+    by_player = {}
+    for player in df['player'].dropna().unique():
+        player_seq = _calculate_player_sequential_cohesion(df, embeddings, player)
+        player_sess = _calculate_player_session_cohesion(df, embeddings, player)
+        by_player[player] = MetricResult(
+            series={
+                'sequential_cohesion': player_seq,
+                'session_cohesion': player_sess,
+            },
+            summary={
+                'mean_sequential_cohesion': float(np.mean(player_seq)) if len(player_seq) > 0 else np.nan,
+                'mean_session_cohesion': float(np.mean(player_sess)) if len(player_sess) > 0 else np.nan,
+            },
+            by_player={},
+            metadata={'post_count': int((df['player'] == player).sum())}
+        )
+
     return MetricResult(
         series={
             'sequential_cohesion': seq_cohesion.dropna().values,
@@ -351,6 +477,7 @@ def _analyze_single_campaign_semantic(df, campaign_id: str, show_progress: bool)
             'mean_sequential_cohesion': float(seq_cohesion.mean()),
             'mean_session_cohesion': float(sess_cohesion['mean_similarity'].mean()),
         },
+        by_player=by_player,
         metadata={
             'campaign_id': campaign_id,
             'total_messages': len(df),

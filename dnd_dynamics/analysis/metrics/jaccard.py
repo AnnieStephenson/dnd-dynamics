@@ -135,6 +135,23 @@ def _analyze_single_campaign(df: pd.DataFrame,
         print(f"No valid sessions found for cohesion analysis in {campaign_id}")
         return None
 
+    # Per-player self-consistency across sessions and vocabulary size
+    by_player = {}
+    for player in df['player'].dropna().unique():
+        mean_jaccard, pairwise_scores = _calculate_player_self_jaccard(df, player)
+
+        # Calculate total vocabulary size for this player
+        player_texts = df[df['player'] == player]['text'].dropna()
+        player_vocab = set(' '.join(player_texts).lower().split())
+        vocab_size = len(player_vocab)
+
+        by_player[player] = MetricResult(
+            series={'jaccard_session_pairs': pairwise_scores},
+            summary={'mean_jaccard': mean_jaccard, 'vocabulary_size': vocab_size},
+            by_player={},
+            metadata={'session_count': int(df[df['player'] == player]['session_id'].nunique())}
+        )
+
     return MetricResult(
         series={
             'jaccard_session': np.array(session_cohesion_scores),
@@ -142,6 +159,7 @@ def _analyze_single_campaign(df: pd.DataFrame,
         summary={
             'mean_jaccard': float(np.mean(session_cohesion_scores)),
         },
+        by_player=by_player,
         metadata={
             'campaign_id': campaign_id,
             'total_messages': len(df),
@@ -193,6 +211,53 @@ def _calculate_dyadic_cohesion(session_df: pd.DataFrame,
         alignment_score = intersection / union if union > 0 else 0.0
 
     return alignment_score, "dyadic"
+
+
+def _calculate_player_self_jaccard(df: pd.DataFrame, player: str) -> tuple:
+    """
+    Calculate a player's vocabulary consistency across sessions.
+
+    For each pair of sessions the player participated in, calculate
+    Jaccard similarity between their vocabularies in those sessions.
+
+    Args:
+        df: Campaign DataFrame with 'text', 'player', 'session_id' columns
+        player: Player name to analyze
+
+    Returns:
+        (mean_jaccard, pairwise_scores_array)
+        Returns (np.nan, empty array) if player has fewer than 2 sessions
+    """
+    player_df = df[df['player'] == player]
+    sessions = player_df['session_id'].dropna().unique()
+
+    if len(sessions) < 2:
+        return np.nan, np.array([])
+
+    # Get vocabulary per session
+    session_vocabs = {}
+    for sess in sessions:
+        sess_texts = player_df[player_df['session_id'] == sess]['text'].dropna()
+        sess_text = ' '.join(sess_texts)
+        session_vocabs[sess] = set(sess_text.lower().split())
+
+    # Calculate pairwise Jaccard between sessions
+    scores = []
+    session_list = list(sessions)
+    for i in range(len(session_list)):
+        for j in range(i + 1, len(session_list)):
+            vocab_a = session_vocabs[session_list[i]]
+            vocab_b = session_vocabs[session_list[j]]
+            if vocab_a and vocab_b:
+                intersection = len(vocab_a & vocab_b)
+                union = len(vocab_a | vocab_b)
+                jaccard = intersection / union if union > 0 else 0.0
+                scores.append(jaccard)
+
+    if not scores:
+        return np.nan, np.array([])
+
+    return float(np.mean(scores)), np.array(scores)
 
 
 def _calculate_group_cohesion(session_df: pd.DataFrame,
