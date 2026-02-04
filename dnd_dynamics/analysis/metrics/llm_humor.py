@@ -1,13 +1,13 @@
 """
 LLM Humor Analysis for D&D Campaigns
 
-This module uses a 2-step LLM approach to extract and rate humor episodes
+This module uses a 3-step LLM approach to extract and analyze humor episodes
 in campaign transcripts:
-1. Per-turn identification: Which turns contain humor?
-2. Rate each episode for originality (1-5)
+1. Per-turn identification: Cast wide net to identify all humor turns
+2. Classification: Classify each turn as ORIGIN (new joke) or CALLBACK (reference)
+3. Rating: Rate each episode for originality (1-5)
 
 Episodes are formed by batching consecutive humor turns.
-Also identifies recurring/inside jokes and tracks their occurrences.
 Results are aggregated by fixed-size chunks for time-series analysis.
 """
 
@@ -16,7 +16,7 @@ import pandas as pd
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from tqdm import tqdm
 
 import litellm
@@ -36,19 +36,23 @@ class HumorEpisode:
     description: str
     participants: List[str]
     originality: int  # 1-5
+    humor_type: str  # 'ORIGIN' or 'CALLBACK' (majority of turns)
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
     turn_explanations: List[tuple]  # List of (turn_number, explanation) tuples
-    joke_id: Optional[str]  # For linking recurrent jokes
-    is_recurring: bool  # Whether this references an earlier joke
-    recurring_reference: Optional[str]  # Description of original joke if recurring
+    turn_types: List[tuple]  # List of (turn_number, humor_type) for per-turn tracking
 
 
 EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for humor and jokes.
 
-Carefully consider each turn in the transcript. For each turn that contains humor, provide:
+Evaluate EVERY turn in the transcript. Do not skip any turns. Cast a wide net to identify ALL turns that contain:
+- Jokes or funny moments (even subtle ones)
+- References or callbacks to earlier humor in the campaign
+- Reactions to humor (laughter, appreciation, building on jokes)
+
+For each turn that contains humor, provide:
 - The turn number
-- A one-sentence explanation of what makes it funny
+- A one-sentence explanation of what makes it funny or why it's humor-related
 
 Include:
 - Standalone jokes or witty comments
@@ -56,13 +60,12 @@ Include:
 - Collaborative humor (players building on each other's jokes)
 - In-character comedic moments
 - Puns, wordplay, or clever references
+- References to earlier jokes (even if not funny on their own)
 
 Do NOT include:
 - Routine friendly greetings
 - Unintentional humor or mistakes
 - Sarcasm meant as criticism
-
-For RECURRING JOKES (inside jokes that reference earlier jokes or running gags), mark them with [RECURRING: brief description of original joke].
 
 ## Transcript (turns {start_turn} to {end_turn})
 
@@ -76,7 +79,7 @@ Otherwise, list each turn containing humor:
 
 TURN 45: Player makes a pun about the dragon's name
 TURN 46: Other player builds on the pun with wordplay
-TURN 52: [RECURRING: dragon pun] Callback to the dragon pun from earlier
+TURN 52: Reference to the dragon pun from earlier
 ...
 '''
 
@@ -107,6 +110,27 @@ Reasoning: [1 sentence]
 '''
 
 
+CLASSIFICATION_PROMPT = '''You are classifying humor turns from a Dungeons & Dragons campaign played on an online forum.
+
+For each turn listed below, classify it as either:
+- ORIGIN: New joke in the campaign, actually funny on its own
+- CALLBACK: References earlier humor from the campaign, may or may not be funny on its own
+
+## Turns to classify:
+
+{turn_list}
+
+## Response Format
+
+Classify each turn:
+
+TURN 45: ORIGIN
+TURN 46: CALLBACK
+TURN 52: ORIGIN
+...
+'''
+
+
 def parse_humor_turn_extraction(
     response_text: str,
     window_start: int,
@@ -115,20 +139,14 @@ def parse_humor_turn_extraction(
     """
     Parse LLM response for per-turn humor identification.
 
-    Handles both regular turns and recurring joke markers:
-    TURN 45: explanation
-    TURN 52: [RECURRING: original joke] explanation
-
     Returns list of dicts with:
     - turn_number
     - explanation
-    - is_recurring (bool)
-    - recurring_reference (str or None)
     """
     if 'NO_HUMOR_FOUND' in response_text.upper():
         return []
 
-    # Pattern: "TURN N: [RECURRING: ...] explanation" or "TURN N: explanation"
+    # Pattern: "TURN N: explanation"
     turn_pattern = r'TURN\s+(\d+):\s*(.+?)(?=TURN\s+\d+:|$)'
     matches = re.findall(turn_pattern, response_text, re.DOTALL | re.IGNORECASE)
 
@@ -138,25 +156,63 @@ def parse_humor_turn_extraction(
         if not (window_start <= turn_num <= window_end):
             continue
 
-        content = content.strip()
-
-        # Check for recurring marker
-        recurring_match = re.match(r'\[RECURRING:\s*([^\]]+)\]\s*(.+)', content, re.IGNORECASE | re.DOTALL)
-        if recurring_match:
-            recurring_reference = recurring_match.group(1).strip()
-            explanation = recurring_match.group(2).strip()
-            is_recurring = True
-        else:
-            recurring_reference = None
-            explanation = content
-            is_recurring = False
-
         turns.append({
             'turn_number': turn_num,
-            'explanation': explanation,
-            'is_recurring': is_recurring,
-            'recurring_reference': recurring_reference
+            'explanation': content.strip()
         })
+
+    return turns
+
+
+def classify_humor_turns(
+    turns: List[Dict],
+    model: str
+) -> List[Dict]:
+    """
+    Classify each humor turn as ORIGIN or CALLBACK using LLM.
+
+    Args:
+        turns: List of dicts with 'turn_number' and 'explanation'
+        model: LLM model to use
+
+    Returns:
+        Updated turns with 'humor_type' added ('ORIGIN' or 'CALLBACK')
+    """
+    if not turns:
+        return turns
+
+    validate_api_key_for_model(model)
+
+    # Format turns for classification prompt
+    turn_list = "\n".join(
+        f"TURN {t['turn_number']}: {t['explanation']}"
+        for t in turns
+    )
+
+    prompt = CLASSIFICATION_PROMPT.format(turn_list=turn_list)
+
+    response = retry_llm_call(
+        litellm.completion,
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1000,
+        temperature=0.3
+    )
+
+    # Parse classification response
+    response_text = response.choices[0].message.content
+    classifications = {}
+
+    for line in response_text.strip().split('\n'):
+        match = re.search(r'TURN\s+(\d+):\s*(ORIGIN|CALLBACK)', line, re.IGNORECASE)
+        if match:
+            turn_num = int(match.group(1))
+            humor_type = match.group(2).upper()
+            classifications[turn_num] = humor_type
+
+    # Update turns with classifications
+    for turn in turns:
+        turn['humor_type'] = classifications.get(turn['turn_number'], 'ORIGIN')  # Default to ORIGIN
 
     return turns
 
@@ -249,15 +305,15 @@ def deduplicate_humor_turns(turns: List[Dict]) -> List[Dict]:
 def batch_humor_turns(turns: List[Dict], max_gap: int = 1) -> List[Dict]:
     """
     Batch consecutive humor turns into episodes.
-    Preserves recurring joke info from any turn in the batch.
+    Tracks humor_type (ORIGIN/CALLBACK) for each turn.
 
     Returns episodes with:
     - start_turn, end_turn
     - turn_count
     - turn_explanations: List of (turn_number, explanation)
+    - turn_types: List of (turn_number, humor_type)
     - description: First turn's explanation
-    - is_recurring: True if any turn is recurring
-    - recurring_reference: From the first recurring turn
+    - humor_type: Majority type among turns (ORIGIN if tied)
     """
     if not turns:
         return []
@@ -269,8 +325,7 @@ def batch_humor_turns(turns: List[Dict], max_gap: int = 1) -> List[Dict]:
         'start_turn': sorted_turns[0]['turn_number'],
         'end_turn': sorted_turns[0]['turn_number'],
         'turn_explanations': [(sorted_turns[0]['turn_number'], sorted_turns[0]['explanation'])],
-        'is_recurring': sorted_turns[0].get('is_recurring', False),
-        'recurring_reference': sorted_turns[0].get('recurring_reference')
+        'turn_types': [(sorted_turns[0]['turn_number'], sorted_turns[0].get('humor_type', 'ORIGIN'))]
     }
 
     for turn in sorted_turns[1:]:
@@ -280,10 +335,9 @@ def batch_humor_turns(turns: List[Dict], max_gap: int = 1) -> List[Dict]:
             current_episode['turn_explanations'].append(
                 (turn['turn_number'], turn['explanation'])
             )
-            # If any turn is recurring, mark the episode as recurring
-            if turn.get('is_recurring') and not current_episode['is_recurring']:
-                current_episode['is_recurring'] = True
-                current_episode['recurring_reference'] = turn.get('recurring_reference')
+            current_episode['turn_types'].append(
+                (turn['turn_number'], turn.get('humor_type', 'ORIGIN'))
+            )
         else:
             # Finalize current episode and start new one
             _finalize_humor_episode(current_episode)
@@ -293,8 +347,7 @@ def batch_humor_turns(turns: List[Dict], max_gap: int = 1) -> List[Dict]:
                 'start_turn': turn['turn_number'],
                 'end_turn': turn['turn_number'],
                 'turn_explanations': [(turn['turn_number'], turn['explanation'])],
-                'is_recurring': turn.get('is_recurring', False),
-                'recurring_reference': turn.get('recurring_reference')
+                'turn_types': [(turn['turn_number'], turn.get('humor_type', 'ORIGIN'))]
             }
 
     # Don't forget last episode
@@ -310,55 +363,10 @@ def _finalize_humor_episode(episode: Dict) -> None:
     episode['description'] = episode['turn_explanations'][0][1]
     episode['participants'] = []  # To be filled by caller
 
-
-def link_inside_jokes(episodes: List[HumorEpisode]) -> Tuple[List[HumorEpisode], List[Dict]]:
-    """
-    Link recurring jokes by assigning consistent joke_ids.
-
-    Returns:
-        - Updated episodes with joke_ids assigned
-        - List of inside joke summaries
-    """
-    # Find all recurring episodes
-    recurring_eps = [ep for ep in episodes if ep.is_recurring and ep.recurring_reference]
-
-    if not recurring_eps:
-        return episodes, []
-
-    # Group by similar recurring_reference (simple string matching for now)
-    joke_groups = {}  # reference -> list of episodes
-
-    for ep in recurring_eps:
-        ref = ep.recurring_reference.lower().strip()
-        # Find if this matches an existing group
-        matched = False
-        for existing_ref in joke_groups:
-            # Simple substring matching - could be improved with embedding similarity
-            if ref in existing_ref or existing_ref in ref:
-                joke_groups[existing_ref].append(ep)
-                matched = True
-                break
-        if not matched:
-            joke_groups[ref] = [ep]
-
-    # Assign joke_ids and build summaries
-    inside_jokes = []
-    joke_counter = 1
-
-    for ref, eps in joke_groups.items():
-        joke_id = f"inside_joke_{joke_counter}"
-        for ep in eps:
-            ep.joke_id = joke_id
-
-        inside_jokes.append({
-            'joke_id': joke_id,
-            'description': ref,
-            'occurrence_count': len(eps),
-            'turn_indices': [(ep.start_turn, ep.end_turn) for ep in eps]
-        })
-        joke_counter += 1
-
-    return episodes, inside_jokes
+    # Determine majority humor_type
+    origin_count = sum(1 for _, t in episode['turn_types'] if t == 'ORIGIN')
+    callback_count = sum(1 for _, t in episode['turn_types'] if t == 'CALLBACK')
+    episode['humor_type'] = 'CALLBACK' if callback_count > origin_count else 'ORIGIN'
 
 
 def create_humor_chunks(
@@ -443,9 +451,9 @@ def _analyze_single_campaign_humor(
 
     1. Extract humor turns using sliding windows
     2. Deduplicate turns
-    3. Batch consecutive turns into episodes
-    4. Rate each episode
-    5. Link inside jokes
+    3. Classify each turn as ORIGIN or CALLBACK
+    4. Batch consecutive turns into episodes
+    5. Rate each episode for originality
     6. Create chunks with adjusted boundaries
     7. Aggregate per-chunk metrics
     8. Build MetricResult
@@ -482,7 +490,12 @@ def _analyze_single_campaign_humor(
     # Step 2: Deduplicate turns
     deduped_turns = deduplicate_humor_turns(all_turns)
 
-    # Step 3: Batch consecutive turns into episodes
+    # Step 3: Classify each turn as ORIGIN or CALLBACK
+    if deduped_turns:
+        print(f"  Classifying {len(deduped_turns)} turn(s)...")
+        deduped_turns = classify_humor_turns(deduped_turns, model)
+
+    # Step 4: Batch consecutive turns into episodes
     episode_dicts = batch_humor_turns(deduped_turns, max_gap=1)
 
     # Add participants to each episode
@@ -491,7 +504,7 @@ def _analyze_single_campaign_humor(
             df, ep['start_turn'], ep['end_turn']
         )
 
-    # Step 4: Rate each episode
+    # Step 5: Rate each episode for originality
     episodes = []
     if episode_dicts:
         print(f"  Rating {len(episode_dicts)} episode(s)...")
@@ -505,16 +518,12 @@ def _analyze_single_campaign_humor(
                 description=ep_dict['description'],
                 participants=ep_dict['participants'],
                 originality=originality,
+                humor_type=ep_dict.get('humor_type', 'ORIGIN'),
                 turn_count=ep_dict['turn_count'],
                 episode_text=episode_text,
                 turn_explanations=ep_dict.get('turn_explanations', []),
-                joke_id=None,
-                is_recurring=ep_dict.get('is_recurring', False),
-                recurring_reference=ep_dict.get('recurring_reference')
+                turn_types=ep_dict.get('turn_types', [])
             ))
-
-    # Step 5: Link inside jokes
-    episodes, inside_jokes = link_inside_jokes(episodes)
 
     # Step 6: Create chunks with adjusted boundaries
     chunks = create_humor_chunks(total_turns, episodes, chunk_size)
@@ -532,20 +541,21 @@ def _analyze_single_campaign_humor(
 
     # Build summary
     all_originalities = [ep.originality for ep in episodes]
-    inside_joke_occurrences = sum(ij['occurrence_count'] for ij in inside_jokes)
+    origin_episodes = [ep for ep in episodes if ep.humor_type == 'ORIGIN']
+    callback_episodes = [ep for ep in episodes if ep.humor_type == 'CALLBACK']
 
     summary = {
         'total_humor_episodes': len(episodes),
+        'origin_count': len(origin_episodes),
+        'callback_count': len(callback_episodes),
         'mean_humor_proportion': float(np.mean(series['humor_proportion'])) if len(series['humor_proportion']) > 0 else 0.0,
         'mean_originality': float(np.mean(all_originalities)) if all_originalities else 0.0,
-        'inside_joke_count': len(inside_jokes),
-        'inside_joke_occurrences': inside_joke_occurrences,
     }
 
     # Build metadata with episode data for human review
     episodes_data = [asdict(ep) for ep in episodes]
 
-    print(f"  Found {len(episodes)} humor episode(s) in {len(chunks)} chunk(s), {len(inside_jokes)} inside joke(s)")
+    print(f"  Found {len(episodes)} humor episode(s) in {len(chunks)} chunk(s) ({len(origin_episodes)} origin, {len(callback_episodes)} callback)")
 
     return MetricResult(
         series=series,
@@ -558,7 +568,6 @@ def _analyze_single_campaign_humor(
             'total_chunks': len(chunks),
             'total_turns': total_turns,
             'episodes': episodes_data,
-            'inside_jokes': inside_jokes,
         }
     )
 
@@ -574,12 +583,12 @@ def analyze_humor(
     """
     Analyze humor and jokes in campaign transcripts.
 
-    Uses a 2-step LLM approach:
-    1. Per-turn identification of humor
-    2. Rate each episode for originality (1-5)
+    Uses a 3-step LLM approach:
+    1. Per-turn identification of humor (wide net)
+    2. Classification of each turn as ORIGIN or CALLBACK
+    3. Rate each episode for originality (1-5)
 
     Episodes are formed by batching consecutive humor turns.
-    Also identifies recurring/inside jokes.
     Results are aggregated by fixed-size chunks.
 
     Args:
@@ -600,7 +609,7 @@ def analyze_humor(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'humor_results_v2')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'humor_results_v3')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(

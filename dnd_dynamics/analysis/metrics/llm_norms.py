@@ -55,7 +55,7 @@ class NormEpisode:
 
 EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for social norms.
 
-Carefully consider each turn in the transcript. For each turn that contains norm-related activity, provide:
+Evaluate EVERY turn in the transcript. Do not skip any turns. For each turn that contains norm-related activity, provide:
 - The turn number
 - The type of norm activity: [establishing], [following], [violating], or [enforcing]
 - A one-sentence explanation
@@ -76,12 +76,14 @@ Types of norms:
 - Character interaction rules (respecting backstories, no PvP)
 
 Do NOT include:
-- In-character roleplay/banter, even if characters react negatively to each other.
-  A norm reflects how PLAYERS expect the game to be played, not how CHARACTERS treat each other in-fiction.
-  If it's just characters being grumpy/teasing/rude to each other and players are having fun, it's not a norm.
+- Characters making speeches about unity, purpose, or shared values
+- Combat coordination (calling out tactics mid-fight, attacking the same enemy)
+- Characters encouraging each other during challenges
+- Standard D&D gameplay any party would do (scouting, healing allies, sharing loot)
+- In-character roleplay or banter between characters
 - Game mechanics or rules (these are DM-enforced, not group norms)
 - One-time decisions that don't become patterns
-- Combat tactics (unless they're explicit group agreements)
+- One-time planning or coordination, even if explicit ("let's do X tonight") - must be a recurring pattern
 
 ## Transcript (turns {start_turn} to {end_turn})
 
@@ -653,7 +655,7 @@ def analyze_norms(
         chunk_size: Turns per chunk (default: config.SOCIAL_CHUNK_SIZE)
         model: LLM model (default: config.SOCIAL_MODEL)
         show_progress: Whether to show progress bars
-        cache_dir: Directory for caching (default: data/processed/norms_results_v2)
+        cache_dir: Directory for caching (default: data/processed/norms_results_v3)
         force_refresh: Force recomputation ignoring cache
 
     Returns:
@@ -666,7 +668,7 @@ def analyze_norms(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'norms_results_v2')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'norms_results_v3')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(

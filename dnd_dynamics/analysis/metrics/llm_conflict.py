@@ -35,6 +35,7 @@ class ConflictEpisode:
     description: str
     participants: List[str]
     intensity: int  # 1-5
+    conflict_type: str  # 'PLAYER' or 'DRAMATIC'
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
     turn_explanations: List[tuple]  # List of (turn_number, explanation) tuples
@@ -42,19 +43,24 @@ class ConflictEpisode:
 
 EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for interpersonal conflicts between players/characters.
 
-Carefully consider each turn in the transcript. For each turn that contains conflict or tension, provide:
+Evaluate EVERY turn in the transcript. Do not skip any turns. For each turn that contains conflict or tension, provide:
 - The turn number
+- A type marker: [PLAYER] or [DRAMATIC]
 - A one-sentence explanation of the conflict
+
+Conflict types:
+- PLAYER: Actual disagreement between players about goals, decisions, or how to proceed. May include out-of-character frustration or negotiation.
+- DRAMATIC: In-character conflict where players seem to be enjoying the theatrical performance. Characters may threaten or argue, but players are collaboratively creating drama.
 
 Focus on:
 - Player-to-player disagreements (in or out of character)
 - Character-to-character conflicts that reflect real tension
 - Disputes about rules, decisions, or direction
+- In-character dramatic tension (collaborative storytelling conflict)
 
 Do NOT include:
 - In-game combat with NPCs/monsters
 - Friendly banter or joking
-- In-character roleplay conflict that is clearly collaborative storytelling
 
 ## Transcript (turns {start_turn} to {end_turn})
 
@@ -64,13 +70,68 @@ Do NOT include:
 
 If no conflicts found, respond with: NO_CONFLICTS_FOUND
 
-Otherwise, list each turn containing conflict:
+Otherwise, list each turn containing conflict with its type:
 
-TURN 45: Player A disagrees with Player B's decision to attack
-TURN 46: Continued argument about strategy
-TURN 52: Dispute over rule interpretation
+TURN 45 [PLAYER]: Player A disagrees with Player B's decision to attack
+TURN 46 [PLAYER]: Continued argument about strategy
+TURN 52 [DRAMATIC]: Characters argue in-character but players are enjoying it
 ...
 '''
+
+
+def parse_conflict_turns_with_type(
+    response_text: str,
+    start_idx: int,
+    end_idx: int
+) -> List[Dict]:
+    """Parse conflict turns with type markers from LLM response."""
+    if "NO_CONFLICTS_FOUND" in response_text:
+        return []
+
+    turns = []
+    # Match: TURN 45 [PLAYER]: explanation or TURN 45 [DRAMATIC]: explanation
+    pattern = r'TURN\s+(\d+)\s*\[(\w+)\]\s*:\s*(.+)'
+
+    for line in response_text.strip().split('\n'):
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            turn_num = int(match.group(1))
+            conflict_type = match.group(2).upper()
+            explanation = match.group(3).strip()
+
+            # Validate turn is in range
+            if start_idx <= turn_num <= end_idx:
+                # Normalize type to PLAYER or DRAMATIC
+                if conflict_type not in ('PLAYER', 'DRAMATIC'):
+                    conflict_type = 'PLAYER'  # Default
+
+                turns.append({
+                    'turn_number': turn_num,
+                    'explanation': explanation,
+                    'conflict_type': conflict_type
+                })
+
+    return turns
+
+
+def determine_episode_conflict_type(turns: List[Dict], episode_dict: Dict) -> str:
+    """
+    Determine the conflict type for an episode based on its constituent turns.
+
+    Uses majority vote among turns in the episode. Ties default to PLAYER.
+    """
+    episode_turns = [
+        t for t in turns
+        if episode_dict['start_turn'] <= t['turn_number'] <= episode_dict['end_turn']
+    ]
+
+    if not episode_turns:
+        return 'PLAYER'  # Default
+
+    player_count = sum(1 for t in episode_turns if t.get('conflict_type') == 'PLAYER')
+    dramatic_count = sum(1 for t in episode_turns if t.get('conflict_type') == 'DRAMATIC')
+
+    return 'DRAMATIC' if dramatic_count > player_count else 'PLAYER'
 
 
 RATING_PROMPT = '''Rate this conflict episode from a Dungeons & Dragons campaign played on an online forum.
@@ -123,11 +184,10 @@ def extract_conflict_turns_from_window(
         temperature=0.3
     )
 
-    return _shared.parse_turn_extraction_response(
+    return parse_conflict_turns_with_type(
         response.choices[0].message.content,
         start_idx,
-        end_idx,
-        "NO_CONFLICTS_FOUND"
+        end_idx
     )
 
 
@@ -306,6 +366,7 @@ def _analyze_single_campaign_conflict(
         for ep_dict in tqdm(episode_dicts, desc=f"  {campaign_id} rating", unit="episode"):
             intensity = rate_conflict_episode(df, ep_dict, model)
             episode_text = _shared.format_turns(df, ep_dict['start_turn'], ep_dict['end_turn'])
+            conflict_type = determine_episode_conflict_type(deduped_turns, ep_dict)
 
             episodes.append(ConflictEpisode(
                 start_turn=ep_dict['start_turn'],
@@ -313,6 +374,7 @@ def _analyze_single_campaign_conflict(
                 description=ep_dict['description'],
                 participants=ep_dict['participants'],
                 intensity=intensity,
+                conflict_type=conflict_type,
                 turn_count=ep_dict['turn_count'],
                 episode_text=episode_text,
                 turn_explanations=ep_dict.get('turn_explanations', [])
@@ -334,8 +396,12 @@ def _analyze_single_campaign_conflict(
 
     # Build summary
     all_intensities = [ep.intensity for ep in episodes]
+    player_conflicts = [ep for ep in episodes if ep.conflict_type == 'PLAYER']
+    dramatic_conflicts = [ep for ep in episodes if ep.conflict_type == 'DRAMATIC']
     summary = {
         'total_conflicts': len(episodes),
+        'player_conflict_count': len(player_conflicts),
+        'dramatic_tension_count': len(dramatic_conflicts),
         'mean_conflict_proportion': float(np.mean(series['conflict_proportion'])) if len(series['conflict_proportion']) > 0 else 0.0,
         'mean_intensity': float(np.mean(all_intensities)) if all_intensities else 0.0,
     }
@@ -396,7 +462,7 @@ def analyze_conflict(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'conflict_results_v2')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'conflict_results_v3')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(

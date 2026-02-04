@@ -35,6 +35,7 @@ class CooperationEpisode:
     description: str
     participants: List[str]
     depth: int  # 1-5 (substance rating)
+    cooperation_type: str  # 'ACTUAL' or 'LANGUAGE'
     turn_count: int  # end_turn - start_turn + 1
     episode_text: str  # Formatted text for human review
     turn_explanations: List[tuple]  # List of (turn_number, explanation) tuples
@@ -42,9 +43,14 @@ class CooperationEpisode:
 
 EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for cooperative moments between players/characters.
 
-Carefully consider each turn in the transcript. For each turn that contains cooperation, provide:
+Evaluate EVERY turn in the transcript. Do not skip any turns. For each turn that contains cooperation, provide:
 - The turn number
+- A type marker: [ACTUAL] or [LANGUAGE]
 - A one-sentence explanation of the cooperation
+
+Cooperation types:
+- ACTUAL: Characters directly coordinate action - enabling, supporting, or building on another's actions
+- LANGUAGE: Characters making speeches about teamwork/unity without actual coordinated action
 
 Include:
 - One character helping or aiding another
@@ -52,6 +58,7 @@ Include:
 - Collective decision-making or group planning
 - Compromises or negotiations that reach agreement
 - Collaborative strategizing or teamwork
+- Speeches or statements about unity and working together (mark as LANGUAGE)
 
 Do NOT include:
 - Combat coordination against NPCs/monsters (unless unusually collaborative)
@@ -66,13 +73,68 @@ Do NOT include:
 
 If no cooperation found, respond with: NO_COOPERATION_FOUND
 
-Otherwise, list each turn containing cooperation:
+Otherwise, list each turn containing cooperation with its type:
 
-TURN 45: Characters discuss strategy for entering the dungeon
-TURN 46: Party agrees on formation and backup plan
-TURN 52: Rogue offers to scout ahead, wizard provides magical support
+TURN 45 [ACTUAL]: Characters discuss strategy for entering the dungeon
+TURN 46 [ACTUAL]: Party agrees on formation and backup plan
+TURN 52 [LANGUAGE]: Character gives inspiring speech about teamwork
 ...
 '''
+
+
+def parse_cooperation_turns_with_type(
+    response_text: str,
+    start_idx: int,
+    end_idx: int
+) -> List[Dict]:
+    """Parse cooperation turns with type markers from LLM response."""
+    if "NO_COOPERATION_FOUND" in response_text:
+        return []
+
+    turns = []
+    # Match: TURN 45 [ACTUAL]: explanation or TURN 45 [LANGUAGE]: explanation
+    pattern = r'TURN\s+(\d+)\s*\[(\w+)\]\s*:\s*(.+)'
+
+    for line in response_text.strip().split('\n'):
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            turn_num = int(match.group(1))
+            cooperation_type = match.group(2).upper()
+            explanation = match.group(3).strip()
+
+            # Validate turn is in range
+            if start_idx <= turn_num <= end_idx:
+                # Normalize type to ACTUAL or LANGUAGE
+                if cooperation_type not in ('ACTUAL', 'LANGUAGE'):
+                    cooperation_type = 'ACTUAL'  # Default
+
+                turns.append({
+                    'turn_number': turn_num,
+                    'explanation': explanation,
+                    'cooperation_type': cooperation_type
+                })
+
+    return turns
+
+
+def determine_episode_cooperation_type(turns: List[Dict], episode_dict: Dict) -> str:
+    """
+    Determine the cooperation type for an episode based on its constituent turns.
+
+    Uses majority vote among turns in the episode. Ties default to ACTUAL.
+    """
+    episode_turns = [
+        t for t in turns
+        if episode_dict['start_turn'] <= t['turn_number'] <= episode_dict['end_turn']
+    ]
+
+    if not episode_turns:
+        return 'ACTUAL'  # Default
+
+    actual_count = sum(1 for t in episode_turns if t.get('cooperation_type') == 'ACTUAL')
+    language_count = sum(1 for t in episode_turns if t.get('cooperation_type') == 'LANGUAGE')
+
+    return 'LANGUAGE' if language_count > actual_count else 'ACTUAL'
 
 
 RATING_PROMPT = '''Rate this cooperation episode from a Dungeons & Dragons campaign played on an online forum.
@@ -125,11 +187,10 @@ def extract_cooperation_turns_from_window(
         temperature=0.3
     )
 
-    return _shared.parse_turn_extraction_response(
+    return parse_cooperation_turns_with_type(
         response.choices[0].message.content,
         start_idx,
-        end_idx,
-        "NO_COOPERATION_FOUND"
+        end_idx
     )
 
 
@@ -308,6 +369,7 @@ def _analyze_single_campaign_cooperation(
         for ep_dict in tqdm(episode_dicts, desc=f"  {campaign_id} rating", unit="episode"):
             depth = rate_cooperation_episode(df, ep_dict, model)
             episode_text = _shared.format_turns(df, ep_dict['start_turn'], ep_dict['end_turn'])
+            cooperation_type = determine_episode_cooperation_type(deduped_turns, ep_dict)
 
             episodes.append(CooperationEpisode(
                 start_turn=ep_dict['start_turn'],
@@ -315,6 +377,7 @@ def _analyze_single_campaign_cooperation(
                 description=ep_dict['description'],
                 participants=ep_dict['participants'],
                 depth=depth,
+                cooperation_type=cooperation_type,
                 turn_count=ep_dict['turn_count'],
                 episode_text=episode_text,
                 turn_explanations=ep_dict.get('turn_explanations', [])
@@ -336,8 +399,12 @@ def _analyze_single_campaign_cooperation(
 
     # Build summary
     all_depths = [ep.depth for ep in episodes]
+    actual_episodes = [ep for ep in episodes if ep.cooperation_type == 'ACTUAL']
+    language_episodes = [ep for ep in episodes if ep.cooperation_type == 'LANGUAGE']
     summary = {
         'total_cooperation_episodes': len(episodes),
+        'actual_cooperation_count': len(actual_episodes),
+        'language_cooperation_count': len(language_episodes),
         'mean_cooperation_proportion': float(np.mean(series['cooperation_proportion'])) if len(series['cooperation_proportion']) > 0 else 0.0,
         'mean_depth': float(np.mean(all_depths)) if all_depths else 0.0,
     }
@@ -398,7 +465,7 @@ def analyze_cooperation(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'cooperation_results_v2')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'cooperation_results_v3')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(

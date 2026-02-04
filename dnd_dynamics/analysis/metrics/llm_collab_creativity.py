@@ -42,20 +42,24 @@ class CollabCreativityEpisode:
 
 EXTRACTION_PROMPT = '''You are analyzing the transcript of a Dungeons & Dragons campaign played on an online forum for moments of collaborative creativity.
 
-Carefully consider each turn in the transcript. For each turn that contains collaborative creativity, provide:
+Evaluate EVERY turn in the transcript. Do not skip any turns. For each turn that contains collaborative creativity, provide:
 - The turn number
 - A one-sentence explanation of the collaboration
+
+Creative collaboration is about generatively building NEW narrative content together, not resolving disputes or achieving tactical goals.
 
 Include:
 - World-building: Players adding details to the setting, creating lore together
 - Character development: Meaningful character interactions that develop relationships or backstories
 - Shared storytelling: Players contributing to and building on each other's narrative ideas
-- Creative problem-solving: Unconventional or imaginative solutions developed collaboratively
+- Creative problem-solving: Unconventional or genuinely imaginative solutions developed collaboratively
 
 This may include collaborative humor, but also non-humorous creative building.
 
 Do NOT include:
-- Purely tactical or mechanical coordination (e.g., "I'll flank left, you flank right")
+- Disagreement → compromise sequences (those belong in conflict analysis, not collaborative creativity)
+- Cooperative problem-solving that isn't genuinely creative (tactical coordination like "I'll flank left, you flank right" doesn't count)
+- Purely tactical or mechanical coordination
 - Combat mechanics without narrative creativity (e.g., "I'll cast bless, then you attack")
 - Simple back-and-forth dialogue without creative expansion
 - One player's solo creative moment (must involve building on each other)
@@ -391,7 +395,7 @@ def analyze_collab_creativity(
         chunk_size: Turns per chunk (default: config.SOCIAL_CHUNK_SIZE)
         model: LLM model (default: config.SOCIAL_MODEL)
         show_progress: Whether to show progress bars
-        cache_dir: Directory for caching (default: data/processed/collab_creativity_results_v2)
+        cache_dir: Directory for caching (default: data/processed/collab_creativity_results_v3)
         force_refresh: Force recomputation ignoring cache
 
     Returns:
@@ -404,7 +408,7 @@ def analyze_collab_creativity(
         model = config.SOCIAL_MODEL
     if cache_dir is None:
         repo_root = Path(__file__).parent.parent.parent.parent
-        cache_dir = str(repo_root / 'data' / 'processed' / 'collab_creativity_results_v2')
+        cache_dir = str(repo_root / 'data' / 'processed' / 'collab_creativity_results_v3')
 
     # Handle caching (model-aware)
     cached_results, data_to_process = _cache.handle_multi_campaign_caching(
